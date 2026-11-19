@@ -8,6 +8,7 @@ from quixstreams import Application
 
 from pipeline import BROKER, DSN, TOPIC, record_transaction
 from rules import assess
+from kyc import payment_screen
 
 # Account-keyed Kafka input serializes updates. NX also makes retried events
 # count once. Use event time for windows and an idle-key expiry for retention.
@@ -29,6 +30,7 @@ def run():
         def score(row):
             with db.transaction():
                 record_transaction(db, row, {"topic": TOPIC, "account_key": row["account"]})
+                payment_screen(db,row)
                 previous = db.execute("SELECT inputs FROM audit WHERE transaction_id=%s AND action='scored.v1'",
                                       (row["id"],)).fetchone()
                 if previous:

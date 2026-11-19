@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<sdnList xmlns="https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/XML">
+<publshInformation><Publish_Date>synthetic-fixture-v1</Publish_Date><Record_Count>2</Record_Count></publshInformation>
+<sdnEntry><uid>990001</uid><firstName>Elara</firstName><lastName>Vesperin</lastName><sdnType>Individual</sdnType><akaList><aka><firstName>Elara</firstName><lastName>Vespar</lastName></aka></akaList><dateOfBirthList><dateOfBirthItem><dateOfBirth>08 Mar 1982</dateOfBirth></dateOfBirthItem></dateOfBirthList></sdnEntry>
+<sdnEntry><uid>990002</uid><lastName>Cobalt Meridian Exports</lastName><sdnType>Entity</sdnType></sdnEntry>
+</sdnList>

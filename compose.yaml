@@ -36,11 +36,14 @@ services:
     environment:
       PGPASSWORD: synthetic-demo
     volumes: [./sql:/migrations:ro]
-    command: ["psql","-h","postgres","-U","postgres","-d","aml","-v","ON_ERROR_STOP=1","-f","/migrations/002-scoring.sql"]
+    command: ["psql","-h","postgres","-U","postgres","-d","aml","-v","ON_ERROR_STOP=1","-f","/migrations/002-scoring.sql","-f","/migrations/003-kyc.sql"]
     depends_on:
       postgres: {condition: service_healthy}
   scorer:
     build: .
+    volumes: [./watchlists:/app/watchlists:ro]
+    environment:
+      SDN_FILE: ${SDN_FILE:-watchlists/sample.xml}
     entrypoint: ["python","-u","scoring.py"]
     depends_on:
       topic: {condition: service_completed_successfully}
@@ -49,6 +52,9 @@ services:
     restart: on-failure
   api:
     build: .
+    volumes: [./watchlists:/app/watchlists:ro]
+    environment:
+      SDN_FILE: ${SDN_FILE:-watchlists/sample.xml}
     entrypoint: ["uvicorn","api:app","--host","0.0.0.0","--port","8000"]
     ports: ["127.0.0.1:8000:8000"]
     depends_on:

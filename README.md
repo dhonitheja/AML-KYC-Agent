@@ -1,4 +1,4 @@
-# Real-time AML/KYC Agent · Phases 1 and 2
+# Real-time AML/KYC Agent · Phases 1 through 3
 
 Synthetic-data engineering demo. The Python producer sends account-keyed transactions to Redpanda. A Python consumer commits transactions and their audit records in one PostgreSQL transaction before acknowledging Kafka offsets. Replayed event IDs are ignored. The application login can append to the audit table but cannot update or delete entries. Database administrators retain control. Redis tracks event-time velocity. FastAPI listens on host loopback port 8000. Compose credentials are local demonstration values.
 
@@ -33,3 +33,21 @@ Invoke-RestMethod http://localhost:8000/alerts
 ```
 
 CI runs a warm-up, then 40 independent Northstar scenarios on isolated account keys. It measures from just before the triggering debit is published until the benchmark consumer receives its matching alert, including broker, Redis and database work. Missing alerts, missing pass-through evidence or p95 of 500 ms or more fail CI. This tests the seeded scenario. The 1,000 transactions/s load test belongs to Phase 6.
+
+## Phase 3 · KYC onboarding and screening
+
+Rapid pass-through alone triggers a transaction alert (65 points against the 60-point alert threshold). Screening findings are separate audit events. A name similarity hit identifies a candidate for analyst review. An agreeing or conflicting full birth date is recorded with the match. Neither the screener nor the scoring service clears, blocks, or closes a case.
+
+With Compose running, open http://localhost:8000/docs and submit a synthetic person or business to **POST /onboarding**. Use a UUID as the application ID. Provide the declared identity and at least one document's extracted fields. A person needs a birth date. A business can supply recursively nested owners. Documents are submitted as structured fields; the endpoint compares name, birth date, ID and address. It screens the applicant, document name variants, and each owner. Reusing the same ID and payload returns the original result. Changed input under that ID returns HTTP 409.
+
+The demo and CI use fictional SDN-format entries in `watchlists/sample.xml`. Try “Cobalt Meridan Exports” to see a spelling-variant hit, or “Juniper Orchard Services” for a clean control. The stream screens an outbound counterparty on first encounter for each account and list snapshot. Results include snapshot SHA-256, entry ID, matched name or alias, similarity score and reasoning. Normalization ignores case, accents, punctuation and word order. The illustrative threshold is 88/100. Similar names alone cannot establish identity.
+
+To load the public [OFAC SDN XML list](https://ofac.treasury.gov/sanctions-list-service), use the following PowerShell commands after building the image. The loader validates a download before replacing the local file. Restart services to change the selected path. Repeat the first command to refresh an active snapshot; future counterparty encounters use its new hash. Historical findings retain their original snapshot ID.
+
+```powershell
+docker compose run --rm -v "${PWD}/watchlists:/app/watchlists" --entrypoint python ingest watchlist.py
+$env:SDN_FILE = "watchlists/sdn.xml"
+docker compose up -d --force-recreate api scorer
+```
+
+The automated screening tests run in fixture mode (the default). They submit applications to FastAPI and payments through Kafka, then check the recorded findings in PostgreSQL. Use synthetic identity documents and payment data only.

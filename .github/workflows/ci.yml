@@ -7,7 +7,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker compose up --build -d
-      - run: docker compose run --rm --entrypoint python ingest -m pytest -q
+      - run: docker compose run --rm --entrypoint python ingest -m pytest -v
       - run: docker compose run --rm ingest seed
       - run: docker compose run --rm --entrypoint python ingest latency.py
       - run: curl --fail http://localhost:8000/alerts | python -c "import json,sys; assert any(a['case_id']=='AML-1042' for a in json.load(sys.stdin))"
