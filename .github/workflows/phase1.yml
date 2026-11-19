@@ -1,0 +1,13 @@
+name: Phase 1 ingestion
+on: [push, workflow_dispatch]
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up --build -d
+      - run: docker compose run --rm ingest seed
+      - run: docker compose run --rm ingest benchmark --seconds 60
+      - if: failure()
+        run: docker compose logs

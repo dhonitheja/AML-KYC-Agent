@@ -1,0 +1,41 @@
+services:
+  kafka:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.3.10
+    command: [redpanda, start, --mode, dev-container, --smp, "1", --memory, 512M, --kafka-addr, "0.0.0.0:9092", --advertise-kafka-addr, "kafka:9092"]
+    volumes: [kafka-data:/var/lib/redpanda/data]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -Eq 'Healthy: *true|Healthy:[[:space:]]+true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  topic:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.3.10
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["rpk topic describe transactions -X brokers=kafka:9092 >/dev/null 2>&1 || rpk topic create transactions -p 1 -X brokers=kafka:9092"]
+    depends_on:
+      kafka: {condition: service_healthy}
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: aml
+      POSTGRES_PASSWORD: synthetic-demo
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "aml"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: redis:7-alpine
+  ingest:
+    build: .
+    command: ["ingest"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      topic: {condition: service_completed_successfully}
+    restart: on-failure
+volumes:
+  pg-data:
+  kafka-data:
