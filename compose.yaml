@@ -11,7 +11,7 @@ services:
   topic:
     image: docker.redpanda.com/redpandadata/redpanda:v24.3.10
     entrypoint: ["/bin/sh", "-ec"]
-    command: ["rpk topic describe transactions -X brokers=kafka:9092 >/dev/null 2>&1 || rpk topic create transactions -p 1 -X brokers=kafka:9092"]
+    command: ["for t in transactions alerts; do rpk topic describe $$t -X brokers=kafka:9092 >/dev/null 2>&1 || rpk topic create $$t -p 1 -X brokers=kafka:9092; done"]
     depends_on:
       kafka: {condition: service_healthy}
   postgres:
@@ -23,12 +23,36 @@ services:
       - pg-data:/var/lib/postgresql/data
       - ./sql:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "aml"]
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "aml"]
       interval: 3s
       timeout: 3s
       retries: 30
   redis:
     image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redis-data:/data]
+  migrate:
+    image: postgres:16
+    environment:
+      PGPASSWORD: synthetic-demo
+    volumes: [./sql:/migrations:ro]
+    command: ["psql","-h","postgres","-U","postgres","-d","aml","-v","ON_ERROR_STOP=1","-f","/migrations/002-scoring.sql"]
+    depends_on:
+      postgres: {condition: service_healthy}
+  scorer:
+    build: .
+    entrypoint: ["python","-u","scoring.py"]
+    depends_on:
+      topic: {condition: service_completed_successfully}
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_started}
+    restart: on-failure
+  api:
+    build: .
+    entrypoint: ["uvicorn","api:app","--host","0.0.0.0","--port","8000"]
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
   ingest:
     build: .
     command: ["ingest"]
@@ -38,4 +62,5 @@ services:
     restart: on-failure
 volumes:
   pg-data:
+  redis-data:
   kafka-data:

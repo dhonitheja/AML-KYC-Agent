@@ -47,6 +47,18 @@ def produce(run, rate, count, seed=False):
         raise RuntimeError(f"Delivery incomplete: {errors}")
 
 
+def record_transaction(db, row, origin):
+    from psycopg.types.json import Jsonb
+    sql = """INSERT INTO transactions(id,run_id,case_id,account,counterparty,amount_cents,direction,channel,occurred_at)
+             VALUES (%(id)s,%(run_id)s,%(case_id)s,%(account)s,%(counterparty)s,%(amount_cents)s,%(direction)s,%(channel)s,%(occurred_at)s)
+             ON CONFLICT(id) DO NOTHING RETURNING id"""
+    if db.execute(sql, row).fetchone():
+        inputs = dict(record=row, **origin)
+        db.execute("""INSERT INTO audit(actor,action,case_id,transaction_id,inputs)
+                      VALUES ('ingest-v1','transaction.recorded',%s,%s,%s)""",
+                   (row["case_id"], row["id"], Jsonb(inputs)))
+
+
 def ingest():
     import psycopg
     from confluent_kafka import Consumer
@@ -54,9 +66,6 @@ def ingest():
     consumer = Consumer({"bootstrap.servers": BROKER, "group.id": "aml-ingest-v1",
                          "auto.offset.reset": "earliest", "enable.auto.commit": False})
     consumer.subscribe([TOPIC])
-    sql = """INSERT INTO transactions(id,run_id,case_id,account,counterparty,amount_cents,direction,channel,occurred_at)
-             VALUES (%(id)s,%(run_id)s,%(case_id)s,%(account)s,%(counterparty)s,%(amount_cents)s,%(direction)s,%(channel)s,%(occurred_at)s)
-             ON CONFLICT(id) DO NOTHING RETURNING id"""
     try:
         with psycopg.connect(DSN, autocommit=True) as db:
             while True:
@@ -68,11 +77,7 @@ def ingest():
                         if msg.error():
                             raise RuntimeError(msg.error())
                         row = json.loads(msg.value())
-                        if db.execute(sql, row).fetchone():
-                            inputs = dict(record=row, topic=msg.topic(), partition=msg.partition(), offset=msg.offset())
-                            db.execute("""INSERT INTO audit(actor,action,case_id,transaction_id,inputs)
-                                          VALUES ('ingest-v1','transaction.recorded',%s,%s,%s)""",
-                                       (row["case_id"], row["id"], Jsonb(inputs)))
+                        record_transaction(db, row, dict(topic=msg.topic(), partition=msg.partition(), offset=msg.offset()))
                 consumer.commit(asynchronous=False)
     finally:
         consumer.close()
@@ -88,7 +93,7 @@ def benchmark(seconds):
         produce(run, offered, count)
         while True:
             rows, audited = db.execute("""SELECT count(*),count(a.transaction_id)
-                FROM transactions t LEFT JOIN audit a ON a.transaction_id=t.id WHERE t.run_id=%s""", (run,)).fetchone()
+                FROM transactions t LEFT JOIN audit a ON a.transaction_id=t.id AND a.action='transaction.recorded' WHERE t.run_id=%s""", (run,)).fetchone()
             elapsed = time.monotonic() - start
             if rows == audited == count or elapsed > seconds + 60:
                 break

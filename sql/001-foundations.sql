@@ -15,7 +15,7 @@ CREATE INDEX ON transactions(run_id);
 CREATE TABLE audit (
   event_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   actor text NOT NULL, action text NOT NULL, case_id text REFERENCES cases,
-  transaction_id uuid UNIQUE REFERENCES transactions, inputs jsonb NOT NULL, model_version text, prompt_version text
+  transaction_id uuid REFERENCES transactions, inputs jsonb NOT NULL, model_version text, prompt_version text
 );
 INSERT INTO audit(actor,action,case_id,inputs) VALUES ('seed','case.opened','AML-1042','{"customer":"Northstar Trading"}');
 GRANT SELECT ON cases,transactions,audit TO aml_worker;
