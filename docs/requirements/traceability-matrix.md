@@ -30,6 +30,7 @@ Requirement → user stories → verifying tests, taken from the front matter of
 | NFR-005 | Automated components recommend only | security | P0 | code-review | tests/test_investigator.py (test_stack_scored_and_alerted_unchanged; Phase 4 only; screeners still a gap) | US-013, US-019, US-024, US-025 |
 | NFR-006 | Synthetic data only; no credentials by default | security | P0 | test | tests/test_rules.py, tests/test_kyc.py, tests/test_investigator.py, CI migrate-log password check | US-014, US-021, US-022, US-026 |
 | NFR-007 | Docker Compose portability and CI budget | quality | P1 | ci-matrix | tests/test_database.py, .github/workflows/ci.yml | US-015, US-022 |
+| NFR-009 | Scoring throughput of 1,000 tx/s | quality | P1 | benchmark | `ingest loadtest` (smoke per push, full gate in the manual `load-test` job), tests/test_scoring_batch.py, tests/test_database.py | - |
 | NFR-008 | Customer data stays inside the deployment | security | P0 | test | tests/test_investigator.py, tests/test_egress_static.py, CI tools tests/egress_check.py + tests/compose_check.py; AC-6 opt-in `local-model` job only | US-021, US-028, US-029 |
 
 ## User stories → tests
@@ -37,6 +38,7 @@ Requirement → user stories → verifying tests, taken from the front matter of
 | Tests | User stories |
 |---|---|
 | tests/test_database.py | US-001 |
+| tests/test_scoring_batch.py | NFR-009 (batched scoring equals one-at-a-time) |
 | tests/test_rules.py | US-002, US-003 |
 | tests/test_kyc.py | US-005, US-006, US-007, US-008 |
 | latency.py | US-004, US-010 |

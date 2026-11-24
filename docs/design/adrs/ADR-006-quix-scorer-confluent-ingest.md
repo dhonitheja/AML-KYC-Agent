@@ -2,12 +2,12 @@
 id: "ADR-006"
 title: "Quix Streams for the scorer, confluent_kafka for ingest"
 type: "adr"
-status: "accepted"
+status: "superseded"
 version: "1.0"
 created: "2026-11-22"
 author: "adr-author-agent"
 supersedes: []
-superseded_by: ""
+superseded_by: "ADR-032"
 satisfies_nfr: ["NFR-001", "NFR-002"]
 evidence: "documented"
 ---

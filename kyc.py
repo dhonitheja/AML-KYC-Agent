@@ -4,6 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 from psycopg.types.json import Jsonb
+from pipeline import copy_audit
 from watchlist import active, normalize
 
 Text=Annotated[str,StringConstraints(strip_whitespace=True,min_length=1,max_length=256)]
@@ -79,12 +80,24 @@ def review(app, snapshot):
 
 
 def payment_screen(db,row):
-    if row["direction"]!="debit":
+    payment_screen_batch(db,[row])
+
+
+def payment_screen_batch(db,rows):
+    """Screen each outbound counterparty once per (account, normalized name, snapshot). Batched for the
+    scorer (ADR-032): one insert round trip and one audit round trip for all debits in the batch."""
+    debits=[row for row in rows if row["direction"]=="debit"]
+    if not debits:
         return
     snapshot=active()
-    inserted=db.execute("""INSERT INTO screened_counterparties(account,name_key,snapshot)
-        VALUES (%s,%s,%s) ON CONFLICT DO NOTHING RETURNING account""",
-        (row["account"],normalize(row["counterparty"]),snapshot.version)).fetchone()
-    if inserted:
-        result=snapshot.screen(row["counterparty"])
-        audit(db,"payment.screened.v1",dict(account=row["account"],**result),row["case_id"],row["id"])
+    new=[]
+    with db.cursor() as cur:
+        cur.executemany("""INSERT INTO screened_counterparties(account,name_key,snapshot)
+            VALUES (%s,%s,%s) ON CONFLICT DO NOTHING RETURNING account""",
+            [(row["account"],normalize(row["counterparty"]),snapshot.version) for row in debits],returning=True)
+        for row in debits:  # one result set per row, in order; a repeat within the batch conflicts
+            if cur.fetchone():
+                new.append(row)
+            cur.nextset()
+    copy_audit(db,[("kyc-screen-v1","payment.screened.v1",row["case_id"],row["id"],
+                    dict(account=row["account"],**snapshot.screen(row["counterparty"]))) for row in new])

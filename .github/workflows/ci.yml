@@ -1,5 +1,11 @@
 name: AML ingestion and real-time scoring
-on: [push, workflow_dispatch]
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      load_runner:
+        description: Runner label for the 1,000 tx/s load-test job (standard 4-vCPU runners are expected to fall short)
+        default: ubuntu-latest
 jobs:
   benchmark:
     runs-on: ubuntu-latest
@@ -47,8 +53,23 @@ jobs:
           done
           exit 1
       - run: docker compose run --rm ingest benchmark --seconds 60
+      # NFR-009 smoke: the partitioned, batched scorer path end to end at a rate a 4-vCPU runner sustains.
+      - run: docker compose run --rm ingest loadtest --rate 300 --seconds 20 --target 250
       - if: failure()
         run: docker compose logs
+  load-test:
+    # NFR-009 full gate: offer 1,200/s for 60 s on fresh volumes, require >= 1,000 scored/s. Manual only.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ inputs.load_runner || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up --build -d
+      - run: curl --retry 30 --retry-connrefused --retry-delay 2 --fail http://localhost:8000/alerts >/dev/null
+      - run: docker compose stop investigator  # measure the scoring path; the investigator is a separate async consumer
+      - run: docker compose run --rm ingest loadtest --rate 1200 --seconds 60 --target 1000
+      - if: failure()
+        run: docker compose logs --tail 200
   local-model:
     # Opt-in only: the Ollama image with baked weights is several GB (NFR-008 AC-6, FR-010.5 AC-6, US-029).
     if: github.event_name == 'workflow_dispatch'
