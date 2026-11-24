@@ -41,5 +41,5 @@ A browser console served by the API at `/console` lets named analysts review ale
 **Acceptance Criteria:**
 - AC-1: The first decision returns 200 and writes exactly one row; a second decision by anyone returns 409.
 - AC-2: An unknown transaction returns 404. An invalid disposition, a short rationale, a missing or foreign `draft_event_id`, or extra fields such as `analyst` return 422.
-- AC-4: A draft written after the queue loaded is not attributed to the decision; the transaction row is unchanged.
 - AC-3: A non-JSON body is refused (CSRF), and no row is written for any refused request.
+- AC-4: A draft written after the queue loaded is not attributed to the decision; the transaction row is unchanged.
