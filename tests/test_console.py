@@ -63,10 +63,17 @@ def test_decision_recorded_once_with_analyst_identity():
     item, = [a for a in queue if a["transaction_id"] == tid]
     assert item["draft"] is None and item["alert"]["score"] == 65
 
-    body = {"transaction_id": tid, "disposition": "escalate", "rationale": "Funds out within a day of large credits."}
+    def txn():
+        with psycopg.connect(DSN) as db:
+            return db.execute("SELECT * FROM transactions WHERE id=%s", (tid,)).fetchone()
+    before = txn()
+    body = {"transaction_id": tid, "disposition": "escalate", "rationale": "Funds out within a day of large credits.",
+            "draft_event_id": item["draft_event_id"]}
     status, rec = call("/console/decisions", body)
     assert status == 200 and rec["analyst"] == "analyst1" and rec["draft_event_id"] is None
+    assert call("/console/decisions", body)[0] == 409  # identical replay
     assert call("/console/decisions", dict(body, disposition="close_no_action"), auth=("analyst2", "synthetic-analyst-2"))[0] == 409
+    assert txn() == before  # recommend-only: the transaction is untouched
 
     with psycopg.connect(DSN) as db:
         rows = db.execute("SELECT actor, inputs FROM audit WHERE action='analyst.decided.v1' AND transaction_id=%s",
@@ -77,7 +84,12 @@ def test_decision_recorded_once_with_analyst_identity():
 
 def test_decision_rejects_bad_input():
     tid = make_alert()
-    ok = {"transaction_id": tid, "disposition": "escalate", "rationale": "Ten or more characters."}
+    ok = {"transaction_id": tid, "disposition": "escalate", "rationale": "Ten or more characters.", "draft_event_id": None}
+    other = make_alert()
+    with psycopg.connect(DSN) as db:  # any real event id that is not this alert's draft
+        foreign = db.execute("SELECT event_id FROM audit WHERE transaction_id=%s", (other,)).fetchone()[0]
+    assert call("/console/decisions", dict(ok, draft_event_id=foreign))[0] == 422
+    assert call("/console/decisions", {k: v for k, v in ok.items() if k != "draft_event_id"})[0] == 422
     assert call("/console/decisions", dict(ok, transaction_id=str(uuid.uuid4())))[0] == 404
     assert call("/console/decisions", dict(ok, disposition="clear"))[0] == 422
     assert call("/console/decisions", dict(ok, rationale="short"))[0] == 422
@@ -87,3 +99,33 @@ def test_decision_rejects_bad_input():
     with psycopg.connect(DSN) as db:
         assert db.execute("SELECT count(*) FROM audit WHERE action='analyst.decided.v1' AND transaction_id=%s",
                           (tid,)).fetchone()[0] == 0
+
+
+ADMIN_DSN = "postgresql://postgres:synthetic-demo@postgres/aml"  # same demo superuser as test_investigator
+
+
+def add_draft(tid):
+    with psycopg.connect(ADMIN_DSN) as db:
+        db.execute("SET ROLE aml_investigator")  # the guard trigger only lets this role write drafts
+        db.execute("""INSERT INTO audit(actor,action,inputs,transaction_id,model_version)
+            VALUES ('investigator-v1','investigation.drafted.v1',%s,%s,'stub-v1')""",
+            (Jsonb({"alert_key": tid, "draft": {"summary": "Synthetic draft.",
+                                                 "recommendation": "escalate_for_review"}}), tid))
+        db.execute("RESET ROLE")  # aml_investigator cannot SELECT audit, so read the id back as admin
+        return db.execute("SELECT event_id FROM audit WHERE action='investigation.drafted.v1' AND transaction_id=%s",
+                          (tid,)).fetchone()[0]
+
+
+def test_decision_records_the_draft_the_analyst_saw():
+    shown, late = make_alert(), make_alert()
+    draft_id = add_draft(shown)
+    item, = [a for a in call("/console/queue")[1] if a["transaction_id"] == shown]
+    assert item["draft_event_id"] == draft_id and item["draft"]["summary"] == "Synthetic draft."
+    body = {"disposition": "close_no_action", "rationale": "Reviewed draft and evidence."}
+    status, rec = call("/console/decisions", dict(body, transaction_id=shown, draft_event_id=draft_id))
+    assert status == 200 and rec["draft_event_id"] == draft_id
+
+    # The page loaded before the investigator wrote a draft: the decision keeps null, not the newer draft.
+    add_draft(late)
+    status, rec = call("/console/decisions", dict(body, transaction_id=late, draft_event_id=None))
+    assert status == 200 and rec["draft_event_id"] is None

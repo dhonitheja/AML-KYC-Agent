@@ -36,9 +36,10 @@ A browser console served by the API at `/console` lets named analysts review ale
 - AC-2: A decided alert is no longer listed.
 
 ### FR-012.3: Record a disposition once
-`POST /console/decisions` with JSON `{transaction_id, disposition, rationale}` SHALL append one `analyst.decided.v1` audit row with `actor=analyst:<name>`, the case ID from the alert, and `inputs` holding the body, the analyst name from authentication and the draft `event_id` the analyst had available. `disposition` is `escalate`, `close_no_action` or `request_information`; `rationale` is 10 to 2000 characters.
+`POST /console/decisions` with JSON `{transaction_id, disposition, rationale, draft_event_id}` SHALL append one `analyst.decided.v1` audit row with `actor=analyst:<name>`, the case ID from the alert, and `inputs` holding the body and the analyst name from authentication. `draft_event_id` is the draft the console showed (`null` if none). It is required, recorded as sent, never replaced by a draft written later, and SHALL be this transaction's `investigation.drafted.v1` row when not null. `disposition` is `escalate`, `close_no_action` or `request_information`; `rationale` is 10 to 2000 characters.
 
 **Acceptance Criteria:**
 - AC-1: The first decision returns 200 and writes exactly one row; a second decision by anyone returns 409.
-- AC-2: An unknown transaction returns 404. An invalid disposition, a short rationale or extra fields such as `analyst` return 422.
+- AC-2: An unknown transaction returns 404. An invalid disposition, a short rationale, a missing or foreign `draft_event_id`, or extra fields such as `analyst` return 422.
+- AC-4: A draft written after the queue loaded is not attributed to the decision; the transaction row is unchanged.
 - AC-3: A non-JSON body is refused (CSRF), and no row is written for any refused request.

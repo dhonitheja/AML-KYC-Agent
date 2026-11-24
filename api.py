@@ -92,6 +92,7 @@ class Decision(BaseModel):
     transaction_id: UUID
     disposition: Literal["escalate", "close_no_action", "request_information"]
     rationale: str = Field(min_length=10, max_length=2000)
+    draft_event_id: int | None  # the draft the analyst was shown; null = none shown (required, so it is explicit)
 
 
 # ponytail: newest 100 undecided alerts; add paging/filters when one analyst page stops covering the backlog.
@@ -130,9 +131,11 @@ def decide(decision: Decision, request: Request, name: str = Depends(analyst)):
         alert = db.execute("SELECT case_id FROM audit WHERE action='alerted.v1' AND transaction_id=%s", (tid,)).fetchone()
         if alert is None:
             raise HTTPException(404, "No recorded alert")
-        draft = db.execute("SELECT event_id FROM audit WHERE action='investigation.drafted.v1' AND transaction_id=%s",
-                           (tid,)).fetchone()
-        inputs = dict(decision.model_dump(mode="json"), analyst=name, draft_event_id=draft and draft[0])
+        if decision.draft_event_id is not None and db.execute("""SELECT 1 FROM audit WHERE event_id=%s
+                AND action='investigation.drafted.v1' AND transaction_id=%s""",
+                (decision.draft_event_id, tid)).fetchone() is None:
+            raise HTTPException(422, "draft_event_id is not this alert's draft")
+        inputs = dict(decision.model_dump(mode="json"), analyst=name)
         try:
             db.execute("""INSERT INTO audit(actor,action,inputs,case_id,transaction_id)
                 VALUES (%s,'analyst.decided.v1',%s,%s,%s)""", (f"analyst:{name}", Jsonb(inputs), alert[0], tid))

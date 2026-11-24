@@ -59,21 +59,35 @@ function card(a) {
     d.textContent = a.skip_reason ? `No draft: ${a.skip_reason}` : "No draft yet.";
   }
   const form = el.querySelector("form");
+  const err = form.querySelector(".err");
   form.addEventListener("submit", async e => {
     e.preventDefault();
-    const body = {transaction_id: a.transaction_id, ...Object.fromEntries(new FormData(form))};
-    const r = await fetch("/console/decisions", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
-    if (r.ok) return load();
-    form.querySelector(".err").textContent = `${r.status}: ${JSON.stringify((await r.json()).detail)}`;
+    // Send the draft this card shows, so the audit row records what the analyst actually saw.
+    const body = {transaction_id: a.transaction_id, draft_event_id: a.draft_event_id, ...Object.fromEntries(new FormData(form))};
+    err.textContent = "";
+    try {
+      const r = await fetch("/console/decisions", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+      if (r.ok) return el.remove();  // remove only this card, keeping unsaved text in the others
+      const detail = await r.json().then(j => j.detail, () => r.statusText);
+      err.textContent = `${r.status}: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`;
+    } catch {
+      err.textContent = "Network error, decision not recorded. Check the connection and submit again.";
+    }
   });
   return el;
 }
 
 async function load() {
   const q = document.getElementById("queue");
-  const r = await fetch("/console/queue");
-  if (!r.ok) { q.textContent = `Could not load queue (${r.status})`; return; }
-  const alerts = await r.json();
+  let alerts;
+  try {
+    const r = await fetch("/console/queue");
+    if (!r.ok) { q.textContent = `Could not load queue (${r.status}). Reload the page to retry.`; return; }
+    alerts = await r.json();
+  } catch {
+    q.textContent = "Could not reach the API. Reload the page to retry.";
+    return;
+  }
   q.replaceChildren(...alerts.map(card));
   if (!alerts.length) q.textContent = "No alerts.";
 }
