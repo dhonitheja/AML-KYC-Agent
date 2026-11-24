@@ -128,3 +128,8 @@ docker compose run --rm ingest loadtest --rate 1200 --seconds 60   # gate: all r
 The load test offers 1,200/s over 10,000 synthetic accounts that are new for each run, and counts until every transaction has its `transaction.recorded` and `scored.v1` rows. On a 16-thread laptop with fresh volumes it measured about 1,190 scored/s, and at least 1,585/s when offered 1,600/s, with alert latency p95 59 ms. Per-push CI runs a 300/s smoke version. The full gate is the manual `load-test` workflow job; pick a larger runner with its `load_runner` input, since a standard 4-vCPU runner is expected to fall short. Stop the investigator while measuring (`docker compose stop investigator`), because it is a separate consumer and drains alerts on its own schedule.
 
 Throughput depends on the database fitting in memory and on how much history each account carries. A 2.8 GB local database measured about 600/s, and 100 history-heavy accounts measured about 700/s (NFR-009). Measure on fresh volumes (`docker compose down -v`). An existing volume keeps its single-partition `transactions` topic, so it runs with one active scorer until you drain it and run `rpk topic add-partitions transactions --num 15`.
+
+## Built with
+
+- [Claude Code](https://claude.com/claude-code) wrote the Phase 5 and Phase 6 changes. Its commits carry a `Co-Authored-By: Claude` trailer.
+- [CodeRabbit](https://www.coderabbit.ai) and [Codex](https://openai.com/codex) review pull requests automatically. Fixes for their findings are separate commits.
