@@ -13,7 +13,7 @@ USER app
 ENTRYPOINT ["python", "-u", "investigator.py"]
 
 FROM base AS application
-COPY *.py ./
+COPY *.py console.html ./
 COPY watchlists/sample.xml ./watchlists/sample.xml
 COPY tests ./tests
 USER app

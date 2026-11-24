@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AML analyst console</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 0 auto; max-width: 960px; padding: 16px; }
+  .alert { border: 1px solid #ccc; border-radius: 6px; padding: 12px; margin: 12px 0; }
+  .ai { background: #fff6d6; padding: 8px; border-radius: 4px; }
+  .meta { color: #555; font-size: 13px; }
+  textarea { width: 100%; box-sizing: border-box; min-height: 4em; }
+  .err { color: #a00; }
+</style>
+</head>
+<body>
+<h1>Alert queue</h1>
+<p class="meta">Newest 100 alerts awaiting a decision.</p>
+<p class="meta">Synthetic data. AI drafts are advisory and require human review. A decision is recorded once in the audit log and cannot be changed.</p>
+<div id="queue">Loading…</div>
+<template id="card">
+  <section class="alert">
+    <h2 data-f="title"></h2>
+    <p class="meta" data-f="txn"></p>
+    <ul data-f="rules"></ul>
+    <div class="ai" data-f="draft"></div>
+    <form>
+      <label>Disposition
+        <select name="disposition" required>
+          <option value="escalate">Escalate</option>
+          <option value="close_no_action">Close, no action</option>
+          <option value="request_information">Request information</option>
+        </select>
+      </label>
+      <label>Rationale (10 to 2000 characters)<textarea name="rationale" minlength="10" maxlength="2000" required></textarea></label>
+      <button>Record decision</button> <span class="err"></span>
+    </form>
+  </section>
+</template>
+<script>
+// Every value from the API, including model-written draft text, is untrusted: set via textContent only (ADR-019).
+const $ = (el, f) => el.querySelector(`[data-f="${f}"]`);
+const money = c => (c / 100).toLocaleString("en-US", {style: "currency", currency: "USD"});
+
+function card(a) {
+  const el = document.getElementById("card").content.firstElementChild.cloneNode(true);
+  $(el, "title").textContent = `Score ${a.alert.score} · ${a.case_id || "no case"} · ${a.transaction_id}`;
+  $(el, "txn").textContent = `${a.direction} ${money(a.amount_cents)} · ${a.counterparty} · account ${a.account} · ${a.occurred_at}`;
+  for (const r of a.alert.rules) {
+    const li = document.createElement("li");
+    li.textContent = `${r.rule} (+${r.points}): ${JSON.stringify(r.evidence)}`;
+    $(el, "rules").append(li);
+  }
+  const d = $(el, "draft");
+  if (a.draft) {
+    d.textContent = `AI draft (${a.model_version}) recommends ${a.draft.recommendation}: ${a.draft.summary}` +
+      (a.consistency_warning ? " [consistency warning]" : "");
+  } else {
+    d.textContent = a.skip_reason ? `No draft: ${a.skip_reason}` : "No draft yet.";
+  }
+  const form = el.querySelector("form");
+  const err = form.querySelector(".err");
+  form.addEventListener("submit", async e => {
+    e.preventDefault();
+    // Send the draft this card shows, so the audit row records what the analyst actually saw.
+    const body = {transaction_id: a.transaction_id, draft_event_id: a.draft_event_id, ...Object.fromEntries(new FormData(form))};
+    err.textContent = "";
+    try {
+      const r = await fetch("/console/decisions", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+      if (r.ok) return el.remove();  // remove only this card, keeping unsaved text in the others
+      const detail = await r.json().then(j => j.detail, () => r.statusText);
+      err.textContent = `${r.status}: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`;
+    } catch {
+      err.textContent = "Network error, decision not recorded. Check the connection and submit again.";
+    }
+  });
+  return el;
+}
+
+async function load() {
+  const q = document.getElementById("queue");
+  let alerts;
+  try {
+    const r = await fetch("/console/queue");
+    if (!r.ok) { q.textContent = `Could not load queue (${r.status}). Reload the page to retry.`; return; }
+    alerts = await r.json();
+  } catch {
+    q.textContent = "Could not reach the API. Reload the page to retry.";
+    return;
+  }
+  q.replaceChildren(...alerts.map(card));
+  if (!alerts.length) q.textContent = "No alerts.";
+}
+load();
+</script>
+</body>
+</html>

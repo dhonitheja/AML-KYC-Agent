@@ -251,7 +251,7 @@ Status values: IMPLEMENTED (built today), PHASE 4 (implemented if the Phase 4 de
 | RR-1 | No internal TLS/SASL (Kafka PLAINTEXT, Redis/Postgres plaintext) | SC-8 | Private compose networks (PHASE 4: `internal: true` for data-holding services), only API published, synthetic data. Hops added by the delta (investigator to `llm`) are also plaintext (B16) |
 | RR-2 | No at-rest encryption (pg-data, kafka-data, redis-data volumes) | SC-28 | Same |
 | RR-3 | API has no authN/Z or access logging | ASVS V2/V4/V7, AU-2 | Loopback-only demo |
-| RR-4 | No analyst disposition recording | SR 11-7, FFIEC | Out of scope; recommend-only means no downstream action is taken |
+| RR-4 | No analyst disposition recording | SR 11-7, FFIEC | Closed in Phase 5: `analyst.decided.v1` via the console (FR-012, ADR-031) |
 | RR-5 | No audit hash chain; superuser can drop triggers | AU-9 | Triggers plus grants raise the bar; chain is a later phase |
 | RR-6 | Raw PII in `kyc_applications` jsonb (api.py:37-39) | GLBA, SC-28 | Synthetic data |
 | RR-7 | Existing consumers crash-loop on malformed messages (pipeline.py:79) | Availability | Out of Phase 4 scope |

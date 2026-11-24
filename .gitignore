@@ -10,3 +10,11 @@ secrets/*
 !secrets/demo/
 .jetro/
 .claude-flow/
+
+# Jetro tool files (local only)
+.mcp.json
+.cursor/
+.agents/
+.windsurfrules
+AGENT.md
+.github/copilot-instructions.md
