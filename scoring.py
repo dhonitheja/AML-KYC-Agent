@@ -10,15 +10,30 @@ from pipeline import BROKER, DSN, TOPIC, copy_audit, record_transactions
 from rules import assess
 from kyc import payment_screen_batch
 
-# Account-keyed Kafka input serializes updates. NX also makes retried events
-# count once. Use event time for windows and an idle-key expiry for retention.
+# Account-keyed Kafka input serializes updates. Use event time for windows and an idle-key expiry for retention.
+# KEYS[2] keeps each event's first counts: a batch that fails after this script ran is retried with every event
+# already in the set, and recounting would let earlier events see later ones (ZADD NX alone only dedupes members).
 VELOCITY = """
-redis.call('ZADD', KEYS[1], 'NX', ARGV[1], ARGV[2])
+if redis.call('ZADD', KEYS[1], 'NX', ARGV[1], ARGV[2]) == 0 then
+  local first = redis.call('HGET', KEYS[2], ARGV[2])
+  if first then
+    local sep = string.find(first, ',')
+    return {tonumber(string.sub(first, 1, sep - 1)), tonumber(string.sub(first, sep + 1))}
+  end
+end
 local latest=redis.call('ZREVRANGE',KEYS[1],0,0,'WITHSCORES')
-redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',tonumber(latest[2])-172800)
+local cutoff=tonumber(latest[2])-172800
+local old=redis.call('ZRANGEBYSCORE',KEYS[1],'-inf',cutoff)
+if #old > 0 then
+  redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',cutoff)
+  redis.call('HDEL',KEYS[2],unpack(old))
+end
+local counts={redis.call('ZCOUNT',KEYS[1],'('..(ARGV[1]-60),ARGV[1]),
+              redis.call('ZCOUNT',KEYS[1],'('..(ARGV[1]-3600),ARGV[1])}
+redis.call('HSET',KEYS[2],ARGV[2],counts[1]..','..counts[2])
 redis.call('EXPIRE',KEYS[1],172800)
-return {redis.call('ZCOUNT',KEYS[1],'('..(ARGV[1]-60),ARGV[1]),
-        redis.call('ZCOUNT',KEYS[1],'('..(ARGV[1]-3600),ARGV[1])}
+redis.call('EXPIRE',KEYS[2],172800)
+return counts
 """
 BATCH = 500
 WINDOW = timedelta(hours=48)
@@ -47,7 +62,8 @@ def score_batch(db, velocity_script, redis, rows):
     if fresh:
         pipe = redis.pipeline(transaction=False)  # Redis runs these in order, so per-key counts match one-by-one
         for row, at in fresh:
-            velocity_script(keys=["velocity:" + row["account"]], args=[at.timestamp(), row["id"]], client=pipe)
+            velocity_script(keys=["velocity:" + row["account"], "velocity-counts:" + row["account"]],
+                            args=[at.timestamp(), row["id"]], client=pipe)
         counts = pipe.execute()
         history = {}
         for r in db.execute("""SELECT t.account, t.occurred_at, t.id::text, t.counterparty, t.amount_cents,

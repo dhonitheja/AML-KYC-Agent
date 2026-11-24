@@ -59,3 +59,24 @@ def test_batch_matches_one_at_a_time_including_duplicates_and_replay():
     expected = {"transaction.recorded": len(many), "scored.v1": len(many),
                 "alerted.v1": sum(r["alert"] for r in batched[:-1]), "payment.screened.v1": 1}  # the one debit
     assert {r["action"]: r["n"] for r in rows} == expected  # exactly once despite the duplicate and replay
+
+
+def test_failed_batch_retry_keeps_first_velocity_counts():
+    """A batch that fails after the Redis pipeline but before the DB commit must rescore identically."""
+    redis = Redis(host="redis")
+    script = redis.register_script(VELOCITY)
+    rows = scenario(f"BATCH-{uuid.uuid4().hex[:10]}")
+    with psycopg.connect(DSN, autocommit=True, row_factory=dict_row) as db:
+        try:
+            with db.transaction():
+                first = score_batch(db, script, redis, rows)
+                raise RuntimeError("simulated failure before commit")
+        except RuntimeError:
+            pass
+        assert db.execute("SELECT count(*) AS n FROM transactions WHERE id = ANY(%s::uuid[])",
+                          ([r["id"] for r in rows],)).fetchone()["n"] == 0  # rolled back
+        with db.transaction():
+            retried = score_batch(db, script, redis, rows)
+    assert [shape_of(r) for r in retried] == [shape_of(r) for r in first]
+    burst = [r for r in retried if any(h["rule"] == "minute_velocity" for h in r["rules"])]
+    assert len(burst) == 1  # only the 10th same-second event reaches the minute threshold
