@@ -1,7 +1,8 @@
 services:
   kafka:
     image: docker.redpanda.com/redpandadata/redpanda:v24.3.10
-    command: [redpanda, start, --mode, dev-container, --smp, "1", --memory, 512M, --kafka-addr, "0.0.0.0:9092", --advertise-kafka-addr, "kafka:9092"]
+    command: [redpanda, start, --mode, dev-container, --smp, "1", --memory, 512M, --kafka-addr, "0.0.0.0:9092", --advertise-kafka-addr, "kafka:9092", --set, "redpanda.enable_metrics_reporter=false"]
+    networks: [internal]
     volumes: [kafka-data:/var/lib/redpanda/data]
     healthcheck:
       test: ["CMD-SHELL", "rpk cluster health | grep -Eq 'Healthy: *true|Healthy:[[:space:]]+true'"]
@@ -11,7 +12,9 @@ services:
   topic:
     image: docker.redpanda.com/redpandadata/redpanda:v24.3.10
     entrypoint: ["/bin/sh", "-ec"]
-    command: ["for t in transactions alerts; do rpk topic describe $$t -X brokers=kafka:9092 >/dev/null 2>&1 || rpk topic create $$t -p 1 -X brokers=kafka:9092; done"]
+    # The kafka --set flag only bootstraps fresh clusters; this keeps telemetry off on existing volumes too.
+    command: ["for t in transactions alerts; do rpk topic describe $$t -X brokers=kafka:9092 >/dev/null 2>&1 || rpk topic create $$t -p 1 -X brokers=kafka:9092; done; rpk cluster config set enable_metrics_reporter false -X admin.hosts=kafka:9644"]
+    networks: [internal]
     depends_on:
       kafka: {condition: service_healthy}
   postgres:
@@ -19,9 +22,10 @@ services:
     environment:
       POSTGRES_DB: aml
       POSTGRES_PASSWORD: synthetic-demo
+    networks: [internal]
     volumes:
       - pg-data:/var/lib/postgresql/data
-      - ./sql:/docker-entrypoint-initdb.d:ro
+      - ./sql/001-foundations.sql:/docker-entrypoint-initdb.d/001-foundations.sql:ro
     healthcheck:
       test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "aml"]
       interval: 3s
@@ -30,17 +34,22 @@ services:
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
+    networks: [internal]
     volumes: [redis-data:/data]
   migrate:
     image: postgres:16
     environment:
       PGPASSWORD: synthetic-demo
+    networks: [internal]
     volumes: [./sql:/migrations:ro]
-    command: ["psql","-h","postgres","-U","postgres","-d","aml","-v","ON_ERROR_STOP=1","-f","/migrations/002-scoring.sql","-f","/migrations/003-kyc.sql"]
+    secrets: [investigator_db_password]
+    entrypoint: ["sh","-ec"]
+    command: ["printf '%s\\n' '\\set investigator_password `cat /run/secrets/investigator_db_password`' '\\i /migrations/002-scoring.sql' '\\i /migrations/003-kyc.sql' '\\i /migrations/004-investigation.sql' | psql -h postgres -U postgres -d aml -v ON_ERROR_STOP=1 -f -"]
     depends_on:
       postgres: {condition: service_healthy}
   scorer:
     build: .
+    networks: [internal]
     volumes: [./watchlists:/app/watchlists:ro]
     environment:
       SDN_FILE: ${SDN_FILE:-watchlists/sample.xml}
@@ -52,6 +61,7 @@ services:
     restart: on-failure
   api:
     build: .
+    networks: [internal, ingress]
     volumes: [./watchlists:/app/watchlists:ro]
     environment:
       SDN_FILE: ${SDN_FILE:-watchlists/sample.xml}
@@ -62,10 +72,45 @@ services:
   ingest:
     build: .
     command: ["ingest"]
+    networks: [internal]
     depends_on:
       postgres: {condition: service_healthy}
       topic: {condition: service_completed_successfully}
     restart: on-failure
+  investigator:
+    build: {context: ., target: investigator}
+    entrypoint: ["python","-u","investigator.py"]
+    networks: [internal]
+    environment:
+      LLM_MODE: ${LLM_MODE:-stub}
+      DATA_CLASSIFICATION: ${DATA_CLASSIFICATION:-}
+      LOCAL_LLM_URL: ${LOCAL_LLM_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-30}
+      LLM_MAX_ATTEMPTS: ${LLM_MAX_ATTEMPTS:-3}
+    secrets: [investigator_db_password]
+    depends_on:
+      topic: {condition: service_completed_successfully}
+      migrate: {condition: service_completed_successfully}
+    restart: on-failure
+  llm:
+    build: {context: ., dockerfile: llm.Dockerfile, args: {OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen2.5:3b}"}}
+    profiles: ["local"]
+    networks: [internal]
+    restart: on-failure
+  watchlist-fetch:
+    build: .
+    profiles: ["fetch"]
+    entrypoint: ["python","-u","watchlist.py"]
+    networks: [egress]
+    volumes: ["./watchlists:/app/watchlists"]
+    restart: "no"
+networks:
+  internal: {internal: true}
+  ingress: {}
+  egress: {}
+secrets:
+  investigator_db_password: {file: "${INVESTIGATOR_DB_PASSWORD_SECRET:-./secrets/demo/investigator_db_password}"}
 volumes:
   pg-data:
   redis-data:

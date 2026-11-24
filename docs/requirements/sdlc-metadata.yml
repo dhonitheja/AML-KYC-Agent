@@ -1,0 +1,93 @@
+sdlc:
+  project: "AML-KYC-Agent"
+  version: "0.3.0"
+  mode: "existing" # greenfield | existing
+  methodology: "agentic-sdlc"
+  model_profile: "balanced" # quality | balanced | economy
+  phases:
+    prepare:
+      status: "completed"
+      evidence: "claude-md-check VERDICT: PASS 2026-11-22; CLAUDE.md"
+      agents:
+        explorer: { status: "completed" }
+        claude_md: { status: "completed" }
+    define:
+      status: "completed"
+      evidence: "requirement-reviewer VERDICT: PASS 2026-11-24 (round 8, NFR-008 delta); user sign-off 2026-11-24"
+      agents:
+        source_analyst: { status: "completed" }
+        test_analyst: { status: "completed" }
+        nfr_analyst: { status: "completed" }
+        fr_author: { status: "completed" }
+        nfr_author: { status: "completed" }
+        us_author: { status: "completed" }
+        requirement_reviewer: { status: "completed" }
+    design:
+      status: "completed"
+      evidence: "design-reviewer VERDICT: PASS 2026-11-24 (round 8, NFR-008 delta); user sign-off 2026-11-24 (ADR-028..030 accepted)"
+      agents:
+        architecture_explorer: { status: "completed" }
+        decisions_explorer: { status: "completed" }
+        architecture_author: { status: "completed" }
+        component_spec_author: { status: "completed" }
+        adr_traceability_author: { status: "completed" }
+        design_reviewer: { status: "completed" }
+    develop:
+      status: "in_progress"
+      agents:
+        architect_planner: { status: "completed" }
+        code_author: { status: "completed" }
+        test_author: { status: "completed" }
+        implementer: { status: "pending" }
+        architect_clarifier: { status: "pending" }
+        code_reviewer: { status: "completed" }
+        reqs_sync: { status: "completed" }
+      plans: ["PLAN-001", "PLAN-002"]
+    verify:
+      status: "pending"
+      agents:
+        coverage_analyst: { status: "pending" }
+        independent_code_reviewer: { status: "pending" }
+        static_dynamic_analyzer: { status: "pending" }
+        regression_tester: { status: "pending" }
+        validation_reviewer: { status: "pending" }
+    release:
+      status: "pending"
+      agents:
+        release_planner: { status: "pending" }
+        release_author: { status: "pending" }
+        release_reviewer: { status: "pending" }
+    operate:
+      status: "pending"
+      agents:
+        issue_triager: { status: "pending" }
+        dependency_monitor: { status: "pending" }
+        telemetry_monitor: { status: "pending" }
+        incident_responder: { status: "pending" }
+        feedback_loop: { status: "pending" }
+  requirement_counts:
+    functional: 11
+    nonfunctional: 8
+    user_stories: 29
+  runtime:
+    active_plan: "PLAN-002"
+    gate_log:
+      - "2026-11-23 prepare claude-md-check PASS -- CLAUDE.md has commands + architecture"
+      - "2026-11-23 define requirement-reviewer FAIL -- inventory, line refs, test mappings, SDN_FILE AC, FR-009.7 FK + FR-010.4 retry loop"
+      - "2026-11-23 define requirement-reviewer FAIL -- round 2: narrative-per-alert contradiction, malformed-alert dedupe key, FR-001 over-claimed tests"
+      - "2026-11-23 define requirement-reviewer FAIL -- round 3: drafted/skipped mutual exclusion not enforced (FR-009.5 pre-check, NFR-002 wording)"
+      - "2026-11-23 define requirement-reviewer PASS -- round 4: all 7 checks pass; W23 single-partition note for Design"
+      - "2026-11-23 design design-reviewer FAIL -- C1-C3 req/design drift, A1 initdb runs 004, A2 latency.py missing, T1 aml_worker can forge investigator rows, T2 password hand-off"
+      - "2026-11-23 design design-reviewer PASS -- round 2: 6 blockers fixed, 9 checks pass; 8 warnings (W1 evidence cap, W2 forged-alert block)"
+      - "2026-11-23 define requirement-reviewer FAIL -- round 5 (FR-011 delta): F1 skip reason, F2 not_alerted transaction_id, F3 config ACs, F4 test name"
+      - "2026-11-23 define requirement-reviewer PASS -- round 6: FR-011 delta clean"
+      - "2026-11-23 design design-reviewer FAIL -- round 3 (FR-011 delta): stale traceability, prompt v1/v2, CS-008 alert_key/evidence_ids contradictions, grounding not pinned"
+      - "2026-11-23 design design-reviewer FAIL -- round 4: amount regex truncates ($100000 -> $100), unprefixed amounts unrecorded, FR-010/FR-011 ADR cells"
+      - "2026-11-23 design design-reviewer FAIL -- round 5: money regex lookahead truncates/rejects amounts followed by comma"
+      - "2026-11-23 design design-reviewer PASS -- round 6: 9/9 clean; W-1 lookahead tightening recommended"
+      - "2026-11-24 define requirement-reviewer FAIL -- round 7 (NFR-008 delta): B1 internal-only api vs loopback port, B2 OFAC fetch inside internal ingest, B3 image-pull/model-weights egress missing, B4 FR-010.3 ACs lack synthetic precondition"
+      - "2026-11-24 define requirement-reviewer PASS -- round 8 (NFR-008 delta): B1-B4 resolved; W-a/W-b applied"
+      - "2026-11-24 design design-reviewer FAIL -- round 7 (NFR-008 delta): check 7 traceability vs frontmatter (CS-005/006 NFR-008, CS-008/009 rows, NFR-005/006 rows, FR-009 DI-011); NFR-008.3(c)/.4/.5 unmapped"
+      - "2026-11-24 design design-reviewer PASS -- round 8 (NFR-008 delta): B1/B2 fixed, 9/9 clean; 4 wording warnings"
+      - "2026-11-24 develop code-reviewer FAIL -- round 1 PLAN-002: B-1 sql/004 set_config prints investigator DB password in migrate logs; W-1 empty key file env fallback needs test+spec; W-2 DI-010 pin note; W-3 llm uid unverified"
+      - "2026-11-24 develop code-reviewer PASS -- round 2 PLAN-002: B-1 fixed (password absent from migrate output), 356/356; W-2 DI-010 note, W-3 llm uid opt-in job, W-4 CI grep scope"

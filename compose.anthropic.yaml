@@ -1,0 +1,10 @@
+# Opt-in anthropic mode, synthetic data only (ADR-030). Adds the only outbound route and the key secret:
+#   docker compose -f compose.yaml -f compose.anthropic.yaml up -d   (with DATA_CLASSIFICATION=synthetic, LLM_MODE=anthropic)
+services:
+  investigator:
+    environment:
+      INVESTIGATOR_EGRESS: "enabled"
+    networks: [internal, egress]
+    secrets: [investigator_db_password, anthropic_api_key]
+secrets:
+  anthropic_api_key: {file: "${ANTHROPIC_API_KEY_SECRET:-./secrets/demo/anthropic_api_key}"}
