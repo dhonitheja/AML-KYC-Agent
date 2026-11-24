@@ -44,7 +44,7 @@ services:
     volumes: [./sql:/migrations:ro]
     secrets: [investigator_db_password]
     entrypoint: ["sh","-ec"]
-    command: ["printf '%s\\n' '\\set investigator_password `cat /run/secrets/investigator_db_password`' '\\i /migrations/002-scoring.sql' '\\i /migrations/003-kyc.sql' '\\i /migrations/004-investigation.sql' | psql -h postgres -U postgres -d aml -v ON_ERROR_STOP=1 -f -"]
+    command: ["printf '%s\\n' '\\set investigator_password `cat /run/secrets/investigator_db_password`' '\\i /migrations/002-scoring.sql' '\\i /migrations/003-kyc.sql' '\\i /migrations/004-investigation.sql' '\\i /migrations/005-console.sql' | psql -h postgres -U postgres -d aml -v ON_ERROR_STOP=1 -f -"]
     depends_on:
       postgres: {condition: service_healthy}
   scorer:
@@ -65,6 +65,7 @@ services:
     volumes: [./watchlists:/app/watchlists:ro]
     environment:
       SDN_FILE: ${SDN_FILE:-watchlists/sample.xml}
+    secrets: [analysts]
     entrypoint: ["uvicorn","api:app","--host","0.0.0.0","--port","8000"]
     ports: ["127.0.0.1:8000:8000"]
     depends_on:
@@ -110,6 +111,7 @@ networks:
   ingress: {}
   egress: {}
 secrets:
+  analysts: {file: "${ANALYSTS_SECRET:-./secrets/demo/analysts}"}
   investigator_db_password: {file: "${INVESTIGATOR_DB_PASSWORD_SECRET:-./secrets/demo/investigator_db_password}"}
 volumes:
   pg-data:

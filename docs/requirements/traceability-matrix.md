@@ -17,6 +17,7 @@ Requirement → user stories → verifying tests, taken from the front matter of
 | FR-009 | Alert investigation agent | implemented | P0 | US-016, US-017, US-018, US-019, US-020, US-027, US-028 | tests/test_investigator.py, tests/test_eval_scenarios.py, CI drafted-row check |
 | FR-010 | Model provider switch | implemented | P0 | US-021, US-022, US-028, US-029 | tests/test_llm.py, tests/test_investigator.py, tests/test_eval_scenarios.py; FR-010.5 AC-6 opt-in `local-model` job only |
 | FR-011 | Hallucination and grounding controls | implemented | P0 | US-023, US-024, US-025, US-026 | tests/test_grounding.py, tests/test_eval_scenarios.py, tests/test_llm.py |
+| FR-012 | Analyst console and disposition recording | implemented | P1 | US-030 | tests/test_console.py |
 
 ## Non-functional requirements
 
@@ -41,6 +42,7 @@ Requirement → user stories → verifying tests, taken from the front matter of
 | latency.py | US-004, US-010 |
 | tests/test_investigator.py | US-016, US-017, US-018, US-019, US-020, US-021, US-022, US-023, US-024, US-025, US-027, US-028, US-029 |
 | tests/test_llm.py | US-020, US-022, US-023, US-029 |
+| tests/test_console.py | US-030 |
 | tests/test_grounding.py | US-016, US-019, US-023, US-025 |
 | tests/test_eval_scenarios.py, tests/eval/scenarios.json | US-016, US-020, US-026, US-027 |
 | CI tools tests/egress_check.py, tests/compose_check.py (`.github/workflows/ci.yml`) | US-026 AC-4, US-028 AC-1, AC-2, AC-5 |

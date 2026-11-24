@@ -1,4 +1,4 @@
-# Real-time AML/KYC Agent · Phases 1 through 4
+# Real-time AML/KYC Agent · Phases 1 through 5
 
 Synthetic-data engineering demo. The Python producer sends account-keyed transactions to Redpanda. A Python consumer commits transactions and their audit records in one PostgreSQL transaction before acknowledging Kafka offsets. Replayed event IDs are ignored. The application login can append to the audit table but cannot update or delete entries. Database administrators retain control. Redis tracks event-time velocity. FastAPI listens on host loopback port 8000. Compose credentials are local demonstration values.
 
@@ -16,7 +16,7 @@ docker compose down
 
 The seed sends two credits totaling $83,800 followed by an $80,900 debit the next day. Rerunning the seed preserves the three transaction identities. Named volumes retain records across normal restarts. The benchmark uses a fresh run ID and offers 60 events per second. It counts durable transaction rows and matching audit entries through the end of the run, includes startup and drain time, and exits successfully only when all records arrive with average persisted throughput of at least 50/s. This measures phase 1 ingestion, not scoring latency. To stream additional data use `docker compose run --rm ingest generate --rate 50 --seconds 120`.
 
-The browser POC is separate. The scorer runs independently of any model. The Phase 4 investigation agent defaults to an offline stub; the shared analyst console belongs to a later phase. No model credentials or real customer data are needed.
+The browser POC is separate. The scorer runs independently of any model. The Phase 4 investigation agent defaults to an offline stub. Phase 5 adds the analyst console. No model credentials or real customer data are needed.
 
 ## Phase 2 · scoring and alerts
 
@@ -110,3 +110,9 @@ On Linux hosts, `./watchlists` must be writable by uid 10001 for `watchlist-fetc
 RR-1, RR-2, RR-3 and RR-6 must be re-assessed before any real data is used (ADR-015 amendment).
 
 The `llm` image is `ollama/ollama:0.40.17@sha256:ccc42bcd3d5fcf7ab0d532b300382154e1a4da56fc666bdb313b78ebdd912754`. Record the model digest from the build log (`ollama list`) after the first `docker compose --profile local build --progress plain llm`.
+
+## Phase 5 · analyst console
+
+Open `http://localhost:8000/console` and sign in with a demo analyst (`analyst1` / `synthetic-analyst-1` or `analyst2` / `synthetic-analyst-2`). The queue shows the newest 100 alerts without a decision, with the triggering rules, the transaction and the investigator draft or skip reason. Drafts are labeled as AI output. An analyst records one disposition per alert (`escalate`, `close_no_action` or `request_information`) with a rationale. The API appends an `analyst.decided.v1` audit row with `actor=analyst:<name>`, and a second decision on the same alert gets 409. Decisions never change `cases`, block payments or file reports.
+
+Credentials come from the Compose secret `analysts`, one `name:password` per line. Point `ANALYSTS_SECRET` at your own file to replace the demo accounts. HTTP Basic over loopback is a demo control only (ADR-031). Replace it with an identity provider and TLS before any non-local use. Migration `005-console.sql` adds the one-decision-per-alert index and runs in `migrate` with the others.

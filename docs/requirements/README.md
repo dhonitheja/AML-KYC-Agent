@@ -2,9 +2,9 @@
 
 | Folder | Contents | Count |
 |---|---|---|
-| `functional/` | FR-001..FR-011 | 11 |
+| `functional/` | FR-001..FR-012 | 12 |
 | `nonfunctional/` | NFR-001..NFR-008 | 8 |
-| `user-stories/` | US-001..US-029 | 29 |
+| `user-stories/` | US-001..US-030 | 30 |
 
 - [traceability-matrix.md](traceability-matrix.md): requirement → story → test mapping and known gaps.
 - [review-checklist.md](review-checklist.md): Define gate results.
