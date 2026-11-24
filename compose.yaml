@@ -13,12 +13,15 @@ services:
     image: docker.redpanda.com/redpandadata/redpanda:v24.3.10
     entrypoint: ["/bin/sh", "-ec"]
     # The kafka --set flag only bootstraps fresh clusters; this keeps telemetry off on existing volumes too.
-    command: ["for t in transactions alerts; do rpk topic describe $$t -X brokers=kafka:9092 >/dev/null 2>&1 || rpk topic create $$t -p 1 -X brokers=kafka:9092; done; rpk cluster config set enable_metrics_reporter false -X admin.hosts=kafka:9644"]
+    # transactions: account-keyed, 16 partitions (ADR-033). alerts stays 1 partition (ADR-017). Existing topics are left as they are.
+    command: ["rpk topic describe transactions -X brokers=kafka:9092 >/dev/null 2>&1 || rpk topic create transactions -p 16 -X brokers=kafka:9092; rpk topic describe alerts -X brokers=kafka:9092 >/dev/null 2>&1 || rpk topic create alerts -p 1 -X brokers=kafka:9092; rpk cluster config set enable_metrics_reporter false -X admin.hosts=kafka:9644"]
     networks: [internal]
     depends_on:
       kafka: {condition: service_healthy}
   postgres:
     image: pgvector/pgvector:pg16
+    # Phase 6 (NFR-009): the 128 MB default cache misses most index pages once the audit table grows.
+    command: ["postgres", "-c", "shared_buffers=512MB"]
     environment:
       POSTGRES_DB: aml
       POSTGRES_PASSWORD: synthetic-demo
@@ -54,6 +57,8 @@ services:
     environment:
       SDN_FILE: ${SDN_FILE:-watchlists/sample.xml}
     entrypoint: ["python","-u","scoring.py"]
+    deploy:
+      replicas: ${SCORER_REPLICAS:-8}
     depends_on:
       topic: {condition: service_completed_successfully}
       migrate: {condition: service_completed_successfully}

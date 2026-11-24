@@ -26,7 +26,7 @@ Ingestion must sustain at least 50 transactions/s with full audit rows, and aler
 - The system SHALL persist at least 50 transactions/s with a matching `transaction.recorded` audit row per transaction. The benchmark offers 60/s for N seconds and passes only if rows == audit rows == expected count and throughput >= 50/s (`pipeline.py:89,102`); it gives up after `seconds + 60` s (`pipeline.py:98`).
 - Alert latency SHALL be p95 < 500 ms over 40 samples (`latency.py:45-48`).
 - (Phase 4, FR-009/FR-010, built) The Phase 4 investigation agent MUST NOT regress either gate. It SHALL run as a separate asynchronous consumer of the `alerts` topic, never inside the scorer DB transaction (CLAUDE.md Architecture, `scoring.py`).
-- Out of scope: a 1,000 tx/s target, deferred to Phase 6.
+- The 1,000 tx/s scoring target is NFR-009 (Phase 6).
 
 ## Verification Method
 Benchmarks are CLIs (`pipeline.py benchmark`, `latency.py`), not test files; `latency.py` is listed in test_files as the latency gate.

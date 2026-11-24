@@ -1,4 +1,4 @@
-# Real-time AML/KYC Agent · Phases 1 through 5
+# Real-time AML/KYC Agent · Phases 1 through 6
 
 Synthetic-data engineering demo. The Python producer sends account-keyed transactions to Redpanda. A Python consumer commits transactions and their audit records in one PostgreSQL transaction before acknowledging Kafka offsets. Replayed event IDs are ignored. The application login can append to the audit table but cannot update or delete entries. Database administrators retain control. Redis tracks event-time velocity. FastAPI listens on host loopback port 8000. Compose credentials are local demonstration values.
 
@@ -20,7 +20,7 @@ The browser POC is separate. The scorer runs independently of any model. The Pha
 
 ## Phase 2 · scoring and alerts
 
-The Quix Streams consumer scores account-keyed arrivals using 48 hours of previously scored account history. Seven illustrative rules cover rapid pass-through, large transfers, large cash activity, one-minute and one-hour velocity, repeated amounts, and debits after credits from multiple counterparties. Scores of 60 or more produce a Kafka message on `alerts` with the triggering transaction ID and evidence. Redis counts each event ID once in rolling event-time windows and retains two days of activity. Older late arrivals can have incomplete velocity context. Subsequent arrivals do not retrospectively rescore earlier transactions.
+The scorer (8 replicas over a 16-partition `transactions` topic, Phase 6) scores account-keyed arrivals using 48 hours of previously scored account history. Seven illustrative rules cover rapid pass-through, large transfers, large cash activity, one-minute and one-hour velocity, repeated amounts, and debits after credits from multiple counterparties. Scores of 60 or more produce a Kafka message on `alerts` with the triggering transaction ID and evidence. Redis counts each event ID once in rolling event-time windows and retains two days of activity. Older late arrivals can have incomplete velocity context. Subsequent arrivals do not retrospectively rescore earlier transactions.
 
 PostgreSQL records ingestion, scoring and alert decisions. A replay reuses the original decision. Alerts are delivered at least once. Downstream consumers should deduplicate by transaction ID and rule version. The migration runs during Compose startup on both new and existing Phase 1 databases. The API has read-only routes for the latest 100 alerts and individual transaction scores. Run locally with synthetic data.
 
@@ -32,7 +32,7 @@ docker compose run --rm --entrypoint python ingest latency.py
 Invoke-RestMethod http://localhost:8000/alerts
 ```
 
-CI runs a warm-up, then 40 independent Northstar scenarios on isolated account keys. It measures from just before the triggering debit is published until the benchmark consumer receives its matching alert, including broker, Redis and database work. Missing alerts, missing pass-through evidence or p95 of 500 ms or more fail CI. This tests the seeded scenario. The 1,000 transactions/s load test belongs to Phase 6.
+CI runs a warm-up, then 40 independent Northstar scenarios on isolated account keys. It measures from just before the triggering debit is published until the benchmark consumer receives its matching alert, including broker, Redis and database work. Missing alerts, missing pass-through evidence or p95 of 500 ms or more fail CI. This tests the seeded scenario. The 1,000 transactions/s load test is Phase 6.
 
 ## Phase 3 · KYC onboarding and screening
 
@@ -116,3 +116,20 @@ The `llm` image is `ollama/ollama:0.40.17@sha256:ccc42bcd3d5fcf7ab0d532b30038215
 Open `http://localhost:8000/console` and sign in with a demo analyst (`analyst1` / `synthetic-analyst-1` or `analyst2` / `synthetic-analyst-2`). The queue shows the newest 100 alerts without a decision, with the triggering rules, the transaction and the investigator draft or skip reason. Drafts are labeled as AI output. An analyst records one disposition per alert (`escalate`, `close_no_action` or `request_information`) with a rationale. The API appends an `analyst.decided.v1` audit row with `actor=analyst:<name>`, and a second decision on the same alert gets 409. Decisions never change `cases`, block payments or file reports.
 
 Credentials come from the Compose secret `analysts`, one `name:password` per line. Point `ANALYSTS_SECRET` at your own file to replace the demo accounts. HTTP Basic over loopback is a demo control only (ADR-031). Replace it with an identity provider and TLS before any non-local use. Migration `005-console.sql` adds the one-decision-per-alert index and runs in `migrate` with the others.
+
+## Phase 6 · 1,000 transactions per second
+
+The scorer now runs as `SCORER_REPLICAS` processes (default 8) in one consumer group over a 16-partition `transactions` topic. Each poll scores up to 500 messages in one database transaction with batched writes (ADR-032, ADR-033). Messages stay keyed by account, so each account is still scored in order by one process, and replays still reuse the stored decision. `alerts` stays single-partition for the investigator.
+
+```powershell
+docker compose run --rm ingest loadtest --rate 1200 --seconds 60   # gate: all rows recorded and scored, >= 1,000 scored/s
+```
+
+The load test offers 1,200/s over 10,000 synthetic accounts that are new for each run, and counts until every transaction has its `transaction.recorded` and `scored.v1` rows. On a 16-thread laptop with fresh volumes it measured about 1,190 scored/s, and at least 1,585/s when offered 1,600/s, with alert latency p95 59 ms. Per-push CI runs a 300/s smoke version. The full gate is the manual `load-test` workflow job; pick a larger runner with its `load_runner` input, since a standard 4-vCPU runner is expected to fall short. Stop the investigator while measuring (`docker compose stop investigator`), because it is a separate consumer and drains alerts on its own schedule.
+
+Throughput depends on the database fitting in memory and on how much history each account carries. A 2.8 GB local database measured about 600/s, and 100 history-heavy accounts measured about 700/s (NFR-009). Measure on fresh volumes (`docker compose down -v`). An existing volume keeps its single-partition `transactions` topic, so it runs with one active scorer until you drain it and run `rpk topic add-partitions transactions --num 15`.
+
+## Built with
+
+- [Claude Code](https://claude.com/claude-code) wrote the Phase 5 and Phase 6 changes. Its commits carry a `Co-Authored-By: Claude` trailer.
+- [CodeRabbit](https://www.coderabbit.ai) and [Codex](https://openai.com/codex) review pull requests automatically. Fixes for their findings are separate commits.

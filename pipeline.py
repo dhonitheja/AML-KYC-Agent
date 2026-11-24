@@ -13,9 +13,10 @@ SEED = [("Redwood Supply", 4820000, "credit", "ACH"),
         ("Terrace Imports", 8090000, "debit", "wire")]
 
 
-def event(run, i, now, seed=False):
+def event(run, i, now, seed=False, accounts=100):
     case_id = None
-    account = f"DEMO-{i % 100:03}"
+    # Load-test accounts are scoped to the run, so each run starts with empty 48 h histories (NFR-009).
+    account = f"DEMO-{i % 100:03}" if accounts == 100 else f"LOAD-{str(run)[:8]}-{i * 7919 % accounts:05}"
     party, cents, direction, channel = f"Synthetic merchant {i % 47}", 1000 + i % 100000, "credit" if i % 2 else "debit", "ACH"
     if seed:
         case_id, account = "AML-1042", "DEMO-1042"
@@ -26,7 +27,7 @@ def event(run, i, now, seed=False):
                 channel=channel, occurred_at=now.isoformat())
 
 
-def produce(run, rate, count, seed=False):
+def produce(run, rate, count, seed=False, accounts=100):
     from confluent_kafka import Producer
     p = Producer({"bootstrap.servers": BROKER, "enable.idempotence": True})
     errors = []
@@ -39,7 +40,7 @@ def produce(run, rate, count, seed=False):
     p.list_topics(TOPIC, timeout=30)
     start = time.monotonic()
     for i in range(count):
-        msg = event(run, i, datetime.now(timezone.utc), seed)
+        msg = event(run, i, datetime.now(timezone.utc), seed, accounts)
         time.sleep(max(0, start + i / rate - time.monotonic()))
         p.produce(TOPIC, key=msg["account"], value=json.dumps(msg), on_delivery=delivered)
         p.poll(0)
@@ -48,15 +49,37 @@ def produce(run, rate, count, seed=False):
 
 
 def record_transaction(db, row, origin):
+    record_transactions(db, [(row, origin)])
+
+
+def copy_audit(db, rows):
+    """Append audit rows [(actor, action, case_id, transaction_id, inputs)] with one COPY (ADR-032).
+    COPY fires the same triggers and constraints as INSERT; the audit table stays append-only."""
+    if rows:
+        with db.cursor().copy("COPY audit(actor,action,case_id,transaction_id,inputs) FROM STDIN") as copy:
+            for actor, action, case_id, transaction_id, inputs in rows:
+                copy.write_row((actor, action, case_id, transaction_id, json.dumps(inputs)))
+
+
+def record_transactions(db, items):
+    """The single write path for transactions: items = [(row, origin)]. One statement inserts the batch in id
+    order, so ingest and scorer batch transactions take row locks in the same order and cannot deadlock.
+    Only a newly inserted row gets a `transaction.recorded` audit entry. Returns the set of new ids."""
     from psycopg.types.json import Jsonb
-    sql = """INSERT INTO transactions(id,run_id,case_id,account,counterparty,amount_cents,direction,channel,occurred_at)
-             VALUES (%(id)s,%(run_id)s,%(case_id)s,%(account)s,%(counterparty)s,%(amount_cents)s,%(direction)s,%(channel)s,%(occurred_at)s)
-             ON CONFLICT(id) DO NOTHING RETURNING id"""
-    if db.execute(sql, row).fetchone():
-        inputs = dict(record=row, **origin)
-        db.execute("""INSERT INTO audit(actor,action,case_id,transaction_id,inputs)
-                      VALUES ('ingest-v1','transaction.recorded',%s,%s,%s)""",
-                   (row["case_id"], row["id"], Jsonb(inputs)))
+    new = {r[0] if isinstance(r, tuple) else r["id"] for r in db.execute(
+        """INSERT INTO transactions(id,run_id,case_id,account,counterparty,amount_cents,direction,channel,occurred_at)
+           SELECT DISTINCT ON (id) id,run_id,case_id,account,counterparty,amount_cents,direction,channel,occurred_at
+           FROM jsonb_to_recordset(%s) AS r(id uuid, run_id uuid, case_id text, account text, counterparty text,
+                amount_cents bigint, direction text, channel text, occurred_at timestamptz)
+           ORDER BY id
+           ON CONFLICT(id) DO NOTHING RETURNING id::text AS id""", (Jsonb([row for row, _ in items]),))}
+    audit, pending = [], set(new)
+    for row, origin in items:  # first occurrence only: a batch can carry the same message twice
+        if row["id"] in pending:
+            pending.discard(row["id"])
+            audit.append(("ingest-v1", "transaction.recorded", row["case_id"], row["id"], dict(record=row, **origin)))
+    copy_audit(db, audit)
+    return new
 
 
 def ingest():
@@ -72,12 +95,13 @@ def ingest():
                 batch = consumer.consume(100, timeout=0.25)
                 if not batch:
                     continue
+                for msg in batch:
+                    if msg.error():
+                        raise RuntimeError(msg.error())
                 with db.transaction():
-                    for msg in batch:
-                        if msg.error():
-                            raise RuntimeError(msg.error())
-                        row = json.loads(msg.value())
-                        record_transaction(db, row, dict(topic=msg.topic(), partition=msg.partition(), offset=msg.offset()))
+                    record_transactions(db, [(json.loads(msg.value()),
+                                              dict(topic=msg.topic(), partition=msg.partition(), offset=msg.offset()))
+                                             for msg in batch])
                 consumer.commit(asynchronous=False)
     finally:
         consumer.close()
@@ -105,18 +129,46 @@ def benchmark(seconds):
     return 0 if passed else 1
 
 
+def loadtest(rate, seconds, accounts, target):
+    """Phase 6 gate (NFR-009): offer `rate`/s for `seconds` over `accounts` keys and pass only if every
+    transaction is recorded and scored and scored rows / elapsed (including drain) >= target."""
+    import psycopg
+    run, count = uuid.uuid4(), rate * seconds
+    with psycopg.connect(DSN, autocommit=True) as db:
+        start = time.monotonic()
+        produce(run, rate, count, accounts=accounts)
+        while True:
+            recorded, scored = db.execute("""SELECT count(*) FILTER (WHERE a.action='transaction.recorded'),
+                count(*) FILTER (WHERE a.action='scored.v1') FROM transactions t JOIN audit a ON a.transaction_id=t.id
+                WHERE t.run_id=%s AND a.action IN ('transaction.recorded','scored.v1')""", (run,)).fetchone()
+            elapsed = time.monotonic() - start
+            if recorded == scored == count or elapsed > seconds + 60:
+                break
+            time.sleep(0.25)
+    throughput = scored / elapsed
+    passed = recorded == scored == count and throughput >= target
+    print(json.dumps(dict(run=str(run), offered_per_second=rate, accounts=accounts, expected=count,
+                          recorded=recorded, scored=scored, seconds=round(elapsed, 3),
+                          scored_per_second=round(throughput, 2), target=target, passed=passed)))
+    return 0 if passed else 1
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["ingest", "seed", "benchmark", "generate"])
+    parser.add_argument("command", choices=["ingest", "seed", "benchmark", "generate", "loadtest"])
     parser.add_argument("--seconds", type=int, default=60)
     parser.add_argument("--rate", type=int, default=50)
+    parser.add_argument("--accounts", type=int, default=10000, help="loadtest only")
+    parser.add_argument("--target", type=int, default=1000, help="loadtest only: required scored/s")
     args = parser.parse_args()
-    if min(args.seconds, args.rate) <= 0:
-        parser.error("rate and seconds must be positive")
+    if min(args.seconds, args.rate, args.accounts, args.target) <= 0:
+        parser.error("rate, seconds, accounts and target must be positive")
     if args.command == "ingest":
         ingest()
     elif args.command == "benchmark":
         raise SystemExit(benchmark(args.seconds))
+    elif args.command == "loadtest":
+        raise SystemExit(loadtest(args.rate, args.seconds, args.accounts, args.target))
     elif args.command == "seed":
         produce(uuid.uuid5(uuid.NAMESPACE_DNS, "synthetic.northstar.aml1042"), 50, 3, True)
     else:

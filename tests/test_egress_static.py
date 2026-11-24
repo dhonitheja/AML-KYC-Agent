@@ -7,7 +7,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 NETWORK = {"urllib", "requests", "httpx", "socket", "http", "aiohttp", "anthropic", "ssl", "ftplib", "smtplib"}
-DATA_STORES = {"psycopg", "pipeline", "redis", "confluent_kafka", "quixstreams", "kyc", "scoring"}
+DATA_STORES = {"psycopg", "pipeline", "redis", "confluent_kafka", "kyc", "scoring"}
 
 
 def tree(name):
