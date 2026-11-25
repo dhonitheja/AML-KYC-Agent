@@ -395,6 +395,37 @@ def test_local_hanging_call_aborted_at_timeout(fake_server):
     assert len(server.requests) == 2 and elapsed < 3
 
 
+def test_local_trickling_response_aborted_at_total_deadline():
+    """Each byte arrives inside the socket timeout, so only a whole-call deadline can stop it."""
+    import socket
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    stop = threading.Event()
+
+    def trickle():
+        conn, _ = listener.accept()
+        with conn:
+            conn.recv(65536)
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100000\r\n\r\n")
+            while not stop.is_set():
+                try:
+                    conn.sendall(b" ")
+                except OSError:
+                    return
+                time.sleep(0.1)
+
+    threading.Thread(target=trickle, daemon=True).start()
+    try:
+        started = time.monotonic()
+        result = retry(LocalLLM(f"http://127.0.0.1:{listener.getsockname()[1]}", "m", 0.3), max_attempts=1)
+        elapsed = time.monotonic() - started
+    finally:
+        stop.set()
+        listener.close()
+    assert isinstance(result, Failure) and result.last_reason == "model_failure" and elapsed < 2
+
+
 # CS-009 v1.2: a 200 carrying an error, a non-JSON body or bad message.content is a retryable validation failure.
 @pytest.mark.parametrize("body", [
     {"error": "model runner crashed"},

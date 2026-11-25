@@ -162,6 +162,13 @@ def test_local_without_url_exits(no_io, url):
     assert "LOCAL_LLM_URL" in exits(env)
 
 
+# Review finding: a malformed URL fails every call and leaves unretried model_failure rows, so it exits at startup.
+@pytest.mark.parametrize("url", ["not-a-url", "ftp://llm:11434", "http://", "http://llm:notaport", "http://llm:99999"])
+def test_local_malformed_url_exits_without_echoing_it(no_io, url):
+    message = exits(dict(LOCAL, LOCAL_LLM_URL=url))
+    assert "LOCAL_LLM_URL" in message and url not in message
+
+
 # FR-010.5 AC-2, US-029 AC-2: local without LLM_MODEL exits (no default).
 @pytest.mark.parametrize("model", [None, "", "  "])
 def test_local_without_model_exits(no_io, model):
@@ -562,6 +569,22 @@ def test_build_drafted_row_labels(classification):
     assert i["consistency_warning"] is False
 
 
+# Review findings: PostgreSQL jsonb rejects U+0000, so neither the untrusted alert payload nor a model draft
+# may carry one into the audit row (the insert would fail on every redelivery).
+def test_drafted_row_strips_nul_from_alert_payload():
+    alert = alert_of(scored_inputs(case_id="AML\u00001042"))
+    row = inv.build_drafted_row(alert, txn_row(), evidence(), "e" * 64, "p" * 64, {}, stub_draft(evidence()),
+                                "stub-v1", data_classification="customer")
+    assert "\\u0000" not in json.dumps(row["inputs"]) and row["inputs"]["alert"]["case_id"] == "AML1042"
+
+
+def test_draft_with_nul_is_rejected_as_schema():
+    ev = evidence()
+    data = stub_draft(ev).model_dump()
+    data["summary"] = "reviewed\u0000"
+    assert inv.validate_draft(json.dumps(data), inv.evidence_ids(ev), {r["rule"] for r in ev["rules"]}) == "schema"
+
+
 # FR-011.3 AC-1: consistency warning stored; the recommendation is never changed.
 def test_build_drafted_row_consistency_warning():
     ev = evidence()
@@ -801,6 +824,23 @@ def test_stack_drafted_row_stub(admin, inv_db):
     assert i["evidence_sha256"] == hashlib.sha256(
         json.dumps(i["evidence"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     assert model.calls == 1
+
+
+# Review finding: screenings are point in time, like history; a later transaction's hit must not enter the evidence.
+def test_stack_screenings_exclude_later_transactions(admin, inv_db):
+    from psycopg.types.json import Jsonb
+    from pipeline import record_transaction
+    case = make_case(admin)
+    later = dict(case.debit, id=str(uuid.uuid4()), counterparty="Cobalt Meridian Exports",
+                 occurred_at=(T0 + timedelta(minutes=2000)).isoformat())
+    record_transaction(admin, later, {"topic": "pytest"})
+    for tid, hits in [(case.debit["id"], []), (later["id"], SCREEN["hits"])]:
+        admin.execute("INSERT INTO audit(actor,action,transaction_id,inputs) VALUES "
+                      "('kyc-screen-v1','payment.screened.v1',%s,%s)",
+                      (tid, Jsonb(dict(SCREEN, account=case.account, hits=hits))))
+    inv.handle(Msg(case.payload), inv_db, Counting(), stack_cfg())
+    row, = outcome_rows(admin, case.debit["id"])
+    assert [s["hits"] for s in row["inputs"]["evidence"]["screenings"]] == [[]]
 
 
 # FR-009.3: case_id comes from the DB scored.v1 row, never the payload.

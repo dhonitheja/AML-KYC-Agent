@@ -13,28 +13,31 @@ from kyc import payment_screen_batch
 # Account-keyed Kafka input serializes updates. Use event time for windows and an idle-key expiry for retention.
 # KEYS[2] keeps each event's first counts: a batch that fails after this script ran is retried with every event
 # already in the set, and recounting would let earlier events see later ones (ZADD NX alone only dedupes members).
+# The stored counts are checked first and pruned (via KEYS[3], member -> event time) 48 h after the window, so a
+# later event in the same failed batch cannot trim away counts its retry needs.
+# ponytail: a failed batch spanning more than 96 h of event time still loses them; prune after commit if that matters.
 VELOCITY = """
-if redis.call('ZADD', KEYS[1], 'NX', ARGV[1], ARGV[2]) == 0 then
-  local first = redis.call('HGET', KEYS[2], ARGV[2])
-  if first then
-    local sep = string.find(first, ',')
-    return {tonumber(string.sub(first, 1, sep - 1)), tonumber(string.sub(first, sep + 1))}
-  end
+local first = redis.call('HGET', KEYS[2], ARGV[2])
+if first then
+  local sep = string.find(first, ',')
+  return {tonumber(string.sub(first, 1, sep - 1)), tonumber(string.sub(first, sep + 1))}
 end
+redis.call('ZADD', KEYS[1], 'NX', ARGV[1], ARGV[2])
 local latest=redis.call('ZREVRANGE',KEYS[1],0,0,'WITHSCORES')
 local cutoff=tonumber(latest[2])-172800
-local old=redis.call('ZRANGEBYSCORE',KEYS[1],'-inf',cutoff)
+redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',cutoff)
+local old=redis.call('ZRANGEBYSCORE',KEYS[3],'-inf',cutoff-172800)
 for i = 1, #old, 500 do
   redis.call('HDEL',KEYS[2],unpack(old,i,math.min(i+499,#old)))
 end
 if #old > 0 then
-  redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',cutoff)
+  redis.call('ZREMRANGEBYSCORE',KEYS[3],'-inf',cutoff-172800)
 end
 local counts={redis.call('ZCOUNT',KEYS[1],'('..(ARGV[1]-60),ARGV[1]),
               redis.call('ZCOUNT',KEYS[1],'('..(ARGV[1]-3600),ARGV[1])}
 redis.call('HSET',KEYS[2],ARGV[2],counts[1]..','..counts[2])
-redis.call('EXPIRE',KEYS[1],172800)
-redis.call('EXPIRE',KEYS[2],172800)
+redis.call('ZADD',KEYS[3],ARGV[1],ARGV[2])
+for i = 1, 3 do redis.call('EXPIRE',KEYS[i],345600) end
 return counts
 """
 BATCH = 500
@@ -46,11 +49,13 @@ def in_window(history, at):
     return [item for occurred, _, item in sorted(history, key=lambda h: h[:2]) if at - WINDOW <= occurred <= at]
 
 
-def score_batch(db, velocity_script, redis, rows):
+def score_batch(db, velocity_script, redis, rows, origins=None):
     """Score rows in order inside the caller's transaction. Returns one result per row.
+    origins: per-row Kafka coordinates (topic, partition, offset) for the transaction.recorded row (FR-001.1).
     Per batch: one prior-score lookup, one history prefetch, one Redis pipeline and batched inserts,
     instead of about eight round trips per event."""
-    record_transactions(db, [(row, {"topic": TOPIC, "account_key": row["account"]}) for row in rows])
+    origins = origins or [{"topic": TOPIC}] * len(rows)
+    record_transactions(db, [(row, dict(origin, account_key=row["account"])) for row, origin in zip(rows, origins)])
     payment_screen_batch(db, rows)
     ids = [row["id"] for row in rows]
     previous = {r["id"]: r["inputs"] for r in db.execute(
@@ -64,7 +69,7 @@ def score_batch(db, velocity_script, redis, rows):
     if fresh:
         pipe = redis.pipeline(transaction=False)  # Redis runs these in order, so per-key counts match one-by-one
         for row, at in fresh:
-            velocity_script(keys=["velocity:" + row["account"], "velocity-counts:" + row["account"]],
+            velocity_script(keys=[k + row["account"] for k in ("velocity:", "velocity-counts:", "velocity-counted:")],
                             args=[at.timestamp(), row["id"]], client=pipe)
         counts = pipe.execute()
         history = {}
@@ -106,7 +111,9 @@ def run():
                     if msg.error():
                         raise RuntimeError(msg.error())
                 with db.transaction():
-                    results = score_batch(db, velocity, redis, [json.loads(msg.value()) for msg in batch])
+                    results = score_batch(db, velocity, redis, [json.loads(msg.value()) for msg in batch],
+                                          [dict(topic=msg.topic(), partition=msg.partition(), offset=msg.offset())
+                                           for msg in batch])
                 failed = []
                 for msg, result in zip(batch, results):
                     if result["alert"]:

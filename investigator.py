@@ -4,6 +4,7 @@ import json
 import os
 import time
 import unicodedata
+import urllib.parse
 import uuid
 from dataclasses import dataclass, field
 from typing import Literal
@@ -80,6 +81,13 @@ def load_model_config(env, read_key=read_secret):
         url, model = get("LOCAL_LLM_URL"), get("LLM_MODEL")
         if not url:
             raise SystemExit("LOCAL_LLM_URL: required in local mode")
+        try:  # a bad URL fails every call, and model_failure rows are never retried, so reject it at startup
+            parsed = urllib.parse.urlsplit(url)
+            parsed.port  # raises on a non-numeric or out-of-range port
+        except ValueError:
+            raise SystemExit("LOCAL_LLM_URL: must be an http(s) URL with a host") from None
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise SystemExit("LOCAL_LLM_URL: must be an http(s) URL with a host")
         if not model:
             raise SystemExit("LLM_MODEL: required in local mode")
         return ModelConfig(llm_mode=mode, data_classification=classification, model=model, local_url=url)
@@ -273,6 +281,8 @@ def validate_draft(raw, evidence_ids, fired_rules):
         return "citation"
     if any(f.rule is not None and f.rule not in fired_rules for f in draft.findings):
         return "rule"
+    if "\\u0000" in draft.model_dump_json():  # PostgreSQL jsonb rejects U+0000; the insert would crash the consumer
+        return "schema"
     return draft
 
 
@@ -313,7 +323,9 @@ def build_drafted_row(alert, txn, evidence, evidence_sha256, prompt_sha256, para
     data_classification from validated config only."""
     tid = str(txn["id"])
     reason = consistency(draft, evidence)
-    inputs = {"alert_key": tid, "alert": alert.model_dump(mode="json"), "evidence": evidence,
+    # The payload is untrusted (only the pointer is checked against the DB): clean it like evidence, so e.g. a
+    # U+0000 in case_id cannot make the jsonb insert fail and stall the consumer on every redelivery.
+    inputs = {"alert_key": tid, "alert": _clean_all(alert.model_dump(mode="json")), "evidence": evidence,
               "evidence_sha256": evidence_sha256, "prompt_sha256": prompt_sha256, "params": params,
               "draft": draft.model_dump(), "ai_generated": True, "requires_human_review": True,
               "grounding": {"checks": list(CHECKS), "passed": True, "attempts": attempts},
@@ -423,8 +435,13 @@ def handle(msg, db, llm, cfg):
             outcome = _insert(cur, row)
         else:
             history = cur.execute(HISTORY, {"account": txn["account"], "t": txn["occurred_at"], "id": tid}).fetchall()
-            screenings = [r["inputs"] for r in cur.execute("""SELECT inputs FROM investigator_audit
-                WHERE action='payment.screened.v1' AND inputs->>'account'=%s ORDER BY event_id""", (txn["account"],))]
+            # Point in time, like HISTORY: screenings of later transactions (scored in the same or a later batch
+            # before this alert arrived) must not enter this alert's evidence.
+            screenings = [r["inputs"] for r in cur.execute("""SELECT a.inputs FROM investigator_audit a
+                JOIN transactions t ON t.id=a.transaction_id
+                WHERE a.action='payment.screened.v1' AND a.inputs->>'account'=%(account)s
+                  AND t.occurred_at <= %(t)s ORDER BY a.event_id""",
+                {"account": txn["account"], "t": txn["occurred_at"], "id": tid})]
             evidence = build_evidence(alert, txn, history, scored["inputs"], screenings)
             case_id = scored["case_id"]
     if reason:

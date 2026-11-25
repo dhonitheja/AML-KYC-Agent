@@ -152,9 +152,17 @@ class LocalLLM:
                            "options": {"temperature": LOCAL_TEMPERATURE, "num_predict": LOCAL_NUM_PREDICT}})
         req = urllib.request.Request(self.url, data=body.encode(), method="POST",
                                      headers={"Content-Type": "application/json"})
+        deadline = time.monotonic() + self.timeout
         try:
             with self.opener.open(req, timeout=self.timeout) as resp:
-                raw = resp.read()
+                # The socket timeout only bounds each read, so a server trickling bytes could hold the consumer
+                # forever. read1 returns after one socket read; the deadline caps the whole call at ~2x timeout.
+                chunks = []
+                while chunk := resp.read1(65536):
+                    chunks.append(chunk)
+                    if time.monotonic() > deadline:
+                        raise TimeoutError
+                raw = b"".join(chunks)
         except urllib.error.HTTPError as exc:
             exc.close()
             raise ModelError(f"HTTPError:{exc.code}", exc.code == 429 or exc.code >= 500) from None
