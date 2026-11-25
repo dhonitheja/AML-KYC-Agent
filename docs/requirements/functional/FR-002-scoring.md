@@ -17,7 +17,7 @@ implements: []
 # FR-002: Real-time rule scoring
 
 ## Description
-Each transaction is scored by a pure function `rules.assess(row, minute_count, hour_count, history)` inside a Quix Streams consumer (group `aml-scorer-v1`). Rules are illustrative, not calibrated policy.
+Each transaction is scored by a pure function `rules.assess(row, minute_count, hour_count, history)` inside a confluent_kafka consumer (group `aml-scorer-v1`, manual commit; ADR-032). Rules are illustrative, not calibrated policy.
 
 ## Requirements
 
@@ -42,8 +42,8 @@ History SHALL be the account's transactions in [occurred_at-48h, occurred_at] th
 - AC-1: An unscored earlier transaction is excluded from history.
 - AC-2: A transaction older than 48h is excluded.
 
-### FR-002.4: Single transaction per message and replay reuse
-Per message, the scorer SHALL in one DB transaction: record_transaction, payment_screen, check for an existing `scored.v1`; if present SHALL return its stored `inputs` without re-scoring or re-counting; otherwise compute velocity, history, `assess`, and insert `scored.v1` (plus `alerted.v1` when alerting) with actor `scorer-v1`. (scoring.py:30-50)
+### FR-002.4: Single transaction per poll and replay reuse
+Per polled batch (ADR-032), the scorer SHALL in one DB transaction, for each message in partition order: record_transaction, payment_screen, check for an existing `scored.v1`; if present SHALL return its stored `inputs` without re-scoring or re-counting; otherwise compute velocity, history, `assess`, and insert `scored.v1` (plus `alerted.v1` when alerting) with actor `scorer-v1`. (scoring.py `score_batch`)
 
 **Acceptance Criteria:**
 - AC-1: Redelivering a message yields no second `scored.v1`/`alerted.v1` row (audit_score_once, sql/002-scoring.sql:4).

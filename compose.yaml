@@ -47,7 +47,8 @@ services:
     volumes: [./sql:/migrations:ro]
     secrets: [investigator_db_password]
     entrypoint: ["sh","-ec"]
-    command: ["printf '%s\\n' '\\set investigator_password `cat /run/secrets/investigator_db_password`' '\\i /migrations/002-scoring.sql' '\\i /migrations/003-kyc.sql' '\\i /migrations/004-investigation.sql' '\\i /migrations/005-console.sql' | psql -h postgres -U postgres -d aml -v ON_ERROR_STOP=1 -f -"]
+    # The password is trimmed like investigator.read_secret (str.strip) and must be non-empty before psql runs.
+    command: ["p=$$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$$//' /run/secrets/investigator_db_password); test -n \"$$p\"; printf '%s\\n' '\\i /migrations/002-scoring.sql' '\\i /migrations/003-kyc.sql' '\\i /migrations/004-investigation.sql' '\\i /migrations/005-console.sql' | psql -h postgres -U postgres -d aml -v ON_ERROR_STOP=1 -v investigator_password=\"$$p\" -f -"]
     depends_on:
       postgres: {condition: service_healthy}
   scorer:

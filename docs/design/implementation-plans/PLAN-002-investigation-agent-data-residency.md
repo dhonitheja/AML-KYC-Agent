@@ -346,7 +346,7 @@ Each item lists **C** number, file, CS reference and what changes relative to PL
   - `main(argv=None, env=os.environ)` calls `investigator.load_model_config(env, read_key)` (steps 1-3 only, never step 4). It then additionally requires `mode == "anthropic"`. Because the gate is inside `load_model_config`, anthropic without synthetic already exits before any key read.
   - It runs each scenario through `decide`, `build_evidence`, `render_prompt`, `complete_with_retry(AnthropicLLM(...), ...)` and validate + `check_grounding`. It writes `./eval-report.json` (path argument allowed) and prints the three rates.
   - No `psycopg` import; no DB connection.
-- **How to run:** from a dev host with Python, or with `docker compose -f compose.yaml -f compose.anthropic.yaml run --rm --entrypoint python investigator eval_investigator.py`. The base file has no route out, so it would fail there by design.
+- **How to run:** from a dev host with Python, or with `LLM_MODE=anthropic DATA_CLASSIFICATION=synthetic docker compose -f compose.yaml -f compose.anthropic.yaml run --rm -v "$PWD/eval:/out" --entrypoint python investigator eval_investigator.py /out/eval-report.json` (the override does not select the mode, and the container user cannot write to `/app`). The base file has no route out, so it would fail there by design.
 
 ### C9 - requirements.txt - revised
 - Add `anthropic==<exact latest 1.x from pip index versions anthropic>`. Re-verify; do not keep the draft `1.17.0` without checking.
@@ -427,7 +427,7 @@ Each item lists **C** number, file, CS reference and what changes relative to PL
   - `FROM ollama/ollama:<tag>@sha256:<digest>`. The code author resolves the digest with `docker buildx imagetools inspect` and records it.
   - `ARG OLLAMA_MODEL`.
   - `ENV OLLAMA_MODELS=/models OLLAMA_NOPRUNE=1 OLLAMA_HOST=0.0.0.0:11434`.
-  - `RUN ollama serve & pid=$!; for i in $(seq 30); do ollama list >/dev/null 2>&1 && break; sleep 1; done; ollama pull "$OLLAMA_MODEL" && ollama list; kill $pid`. This is a build-time download only; the `ollama list` output (model ID digest) is recorded in DI-011 and the README.
+  - `RUN ollama serve & pid=$!; for i in $(seq 30); do ollama list >/dev/null 2>&1 && break; sleep 1; done; ollama pull "$OLLAMA_MODEL" && ollama list; status=$?; kill $pid; exit $status` (the pull status is kept, so a failed download fails the build, as in llm.Dockerfile). This is a build-time download only; the `ollama list` output (model ID digest) is recorded in DI-011 and the README.
   - `RUN chmod -R a+rX /models`.
   - Non-root (RR-25): try `RUN useradd --system --uid 10001 app` (or the image's equivalent) and `USER app` with `ENV HOME=/tmp`.
   - Verify the server starts and serves `/api/chat` as uid 10001 with `/models` read-only to it. If it does not, remove `USER` and leave RR-25 as accepted.

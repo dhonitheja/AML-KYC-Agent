@@ -23,7 +23,7 @@ As an **AML compliance analyst**, I want **every fact in a drafted narrative che
 ## Acceptance Criteria
 - [x] AC-1: Given a draft made of claim-level findings, when it is checked, then deterministic grounding checks verify amounts, counterparties, rule names and sanctions wording against the evidence loaded from the DB.
 - [x] AC-2: Given every claim passes the checks, when the draft is accepted, then investigation.drafted.v1 is written with the narrative.
-- [x] AC-3: Given a claim states an amount, counterparty, rule name or sanctions wording not present in the evidence, when it is checked, then the draft is rejected, no narrative is written and the draft is retried.
+- [x] AC-3: Given a claim states a `$` amount (amounts without `$` are not checked, FR-011.2), a quoted counterparty, rule name or sanctions wording not present in the evidence, when it is checked, then the draft is rejected, no narrative is written and the draft is retried.
 - [x] AC-4: Given grounding fails on every attempt up to LLM_MAX_ATTEMPTS, when the last attempt fails, then investigation.skipped.v1 with reason grounding_failure is written and no narrative exists for that alert.
 
 ## Test Coverage

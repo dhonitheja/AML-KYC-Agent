@@ -32,17 +32,22 @@ from watchlist import active
 @app.post("/onboarding")
 def onboard(application: Application):
     body=application.model_dump(mode="json")
+    def stored():
+        row=db.execute("SELECT application,result FROM kyc_applications WHERE id=%s",
+                       (application.application_id,)).fetchone()
+        if row and row[0]!=body:
+            raise HTTPException(409,"Application ID already belongs to different input")
+        return row and row[1]
+
     with psycopg.connect(DSN) as db:
+        if (existing:=stored()) is not None:  # a replay needs no watchlist, so it works even if the file is gone
+            return existing
         result=review(application,active())
         created=db.execute("""INSERT INTO kyc_applications(id,application,result)
             VALUES (%s,%s,%s) ON CONFLICT DO NOTHING RETURNING id""",
             (application.application_id,Jsonb(body),Jsonb(result))).fetchone()
-        if not created:
-            original,existing=db.execute("SELECT application,result FROM kyc_applications WHERE id=%s",
-                                         (application.application_id,)).fetchone()
-            if original!=body:
-                raise HTTPException(409,"Application ID already belongs to different input")
-            return existing
+        if not created:  # a concurrent submission won the insert
+            return stored()
         audit(db,"kyc.reviewed.v1",{k:v for k,v in result.items() if k!="screening"})
         for subject in result["screening"]:
             audit(db,"onboarding.screened.v1",dict(application_id=str(application.application_id),**subject))

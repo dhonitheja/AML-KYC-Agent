@@ -28,7 +28,7 @@ Two consumer groups read `transactions` independently: `aml-ingest-v1` (ingest) 
 | Service | Construction | Ref |
 |---------|--------------|-----|
 | ingest | `Consumer` group `aml-ingest-v1`, earliest, auto-commit off; one autocommit psycopg connection as `aml_worker` | pipeline.py:66-70 |
-| scorer | Quix `Application` group `aml-scorer-v1`, earliest, `linger.ms=1`; Redis client registers Lua `VELOCITY`; psycopg connection, `dict_row` | scoring.py:26-29 |
+| scorer | confluent_kafka `Consumer` group `aml-scorer-v1`, earliest, manual commit, plus an idempotent `Producer` with `linger.ms=1` (ADR-032); Redis client registers Lua `VELOCITY`; psycopg connection, `dict_row` | scoring.py:26-29 |
 | scorer wiring | `app.dataframe(topic(TOPIC, json)).apply(score)`; `filter(alert).to_topic("alerts")`; `app.run()` | scoring.py:52-54 |
 | watchlist | First `active()` call parses `SDN_FILE` (default `watchlists/sample.xml`) with `defusedxml`; cached by (path, mtime, size); version = SHA-256 | watchlist.py:94-102,68-91 |
 | startup order | topics and migrations complete before scorer/api (`depends_on`) | compose.yaml:11-16,34-41,48-51,60-61 |
@@ -68,7 +68,7 @@ Network gate (independent): in the default Compose files the investigator has no
 ## 4. Result Assembly
 
 - Result dict: `{transaction_id, case_id, run_id, version:"v1", score, alert, rules:[{rule, points, evidence}]}` (rules.py:30-31). It is both the `scored.v1` audit `inputs` and the `alerts` message body (scoring.py:53). It carries no account; consumers join `transactions` by `transaction_id`.
-- Alert publication: Quix `filter(alert).to_topic("alerts")` runs after `score()` returns, i.e. after the DB commit (scoring.py:31,53), so delivery is at-least-once and a crash can duplicate or (before publish) delay but not lose a committed alert on replay (step 3 returns the stored result).
+- Alert publication: the scorer produces the batch's alerts after its DB commit, flushes, then commits offsets (ADR-032), so delivery is at-least-once and a crash can duplicate or (before publish) delay but not lose a committed alert on replay (step 3 returns the stored result).
 - Read side: `GET /alerts` returns the latest 100 `alerted.v1` inputs; `GET /scores/{id}` returns the `scored.v1` inputs (api.py:10-24).
 
 ### 4a. Investigation path (PHASE 4, proposed) - one alert, per message (D1)
@@ -86,7 +86,7 @@ Integrity (corrected): sql/004 creates (a) a unique index on `audit(transaction_
 
 ## 5. Completion / Cleanup
 
-- BUILT: ingest commits the offset after each batch commit (pipeline.py:81); the `finally` closes the consumer (pipeline.py:82-83). The scorer's offsets are managed by Quix after the sink/producer step. psycopg connections are context-managed (pipeline.py:70; scoring.py:29; api.py:12,22,35).
+- BUILT: ingest commits the offset after each batch commit (pipeline.py:81); the `finally` closes the consumer (pipeline.py:82-83). The scorer commits offsets itself after the DB commit and the alert flush (ADR-032). psycopg connections are context-managed (pipeline.py:70; scoring.py:29; api.py:12,22,35).
 - Failure: an exception in `score()` rolls back the transaction; the message is redelivered; step 3 and the unique indexes make the retry safe. Compose restarts ingest/scorer `on-failure` (compose.yaml:52,68). A malformed message crash-loops (RR-7).
 - PHASE 4: offset commits only after the audit INSERT commits. A crash before that redelivers; the pre-check or indexes then turn it into a no-op. The investigator never publishes to Kafka, writes no `cases`, and does not touch `scored.v1`/`alerted.v1` (D9, FR-009.6). Outcome: every consumed alert ends with exactly one drafted or skipped record.
 - Retention: audit rows are permanent (at least 5 years, no deletion path, UPDATE/DELETE/TRUNCATE blocked by trigger, D7/D8).
@@ -109,7 +109,7 @@ Producer   Redpanda      ingest        scorer        Redis     Postgres      inv
    |                       |                  |  assess() (pure)     |               |                |
    |                       |                  |--INSERT scored.v1, alerted.v1------->|                |
    |                       |                  COMMIT                 |               |                |
-   |                       |<--alerts msg (Quix, after commit)-------|               |                |
+   |                       |<--alerts msg (after commit)------------|               |                |
    |                       |                                          |               |                |
    |                       |--poll alert---------------------------------------------->|                |
    |                       |                                          |<--txn: lock+precheck+evidence-|
@@ -151,7 +151,7 @@ Producer   Redpanda      ingest        scorer        Redis     Postgres      inv
       watchlist.refresh(): 128 MiB cap, defusedxml parse, Record_Count check (watchlist.py:16,88-90,105-116)
       atomic os.replace --> ./watchlists/sdn.xml   (the container's only write mount)
  container exits (one-shot; no secrets, no DB, not on internal)
- operator: set SDN_FILE=watchlists/sdn.xml; docker compose up -d --force-recreate api scorer
+ operator: SDN_FILE=watchlists/sdn.xml docker compose up -d --force-recreate api scorer   (PowerShell: $env:SDN_FILE=...)
  api, scorer (internal net) read ./watchlists READ-ONLY --> watchlist.active(): cached by (path, mtime, size); SHA-256 = snapshot version
 ```
 

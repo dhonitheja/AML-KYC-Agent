@@ -28,7 +28,7 @@ HTTP/1.1 requests and responses for CS-006.
 Process exit is not restarted (the `api` service has no `restart` policy, compose.yaml:53-61). Default keep-alive timeout applies; no explicit limits set.
 
 ## Security Notes
-Binds 0.0.0.0 inside the container; exposure is limited by the host mapping `127.0.0.1:8000:8000`. No TLS.
+Binds 0.0.0.0 inside the container. From the host, exposure is limited by the mapping `127.0.0.1:8000:8000`. Every container on the `internal` network can also reach `api:8000` directly, and `GET /alerts`, `GET /scores/{transaction_id}` and `POST /onboarding` have no authentication, so the design trusts every service on that network; only the `/console` routes require analyst Basic auth (ADR-031). No TLS.
 
 ## Why This Dependency
 Standard ASGI server for FastAPI; replaceable by hypercorn or gunicorn with uvicorn workers by changing only the compose entrypoint.

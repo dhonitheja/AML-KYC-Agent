@@ -104,7 +104,7 @@ The investigator SHALL act only if an `alerted.v1` audit row exists for the aler
 Rule evidence lists of any length SHALL be accepted. Evidence sent to the model SHALL be truncated to at most 50 ids per rule, keeping the alerted transaction id and the most recent ids, and `inputs` SHALL record `evidence_truncated = true` with the original counts per rule. Rejecting an alert as malformed because of long evidence is not allowed.
 
 **Acceptance Criteria:**
-- AC-1: An alert with a rule listing 60 or more credit ids is processed (not `malformed_alert`), the model receives at most 50 ids for that rule including the alerted transaction id and the most recent ids, and `inputs.evidence_truncated = true` with the original count.
+- AC-1: An alert with a rule listing 60 or more credit ids is processed (not `malformed_alert`), the model receives at most 50 ids for that rule: the alerted transaction id if the list contains it, plus the most recent others, and `inputs.evidence_truncated = true` with the original count.
 - AC-2: Evidence lists of 50 ids or fewer are sent unchanged and `evidence_truncated` is false or absent.
 - AC-3: Citation integrity (FR-009.4) is checked against the ids actually sent to the model.
 

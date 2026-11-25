@@ -18,7 +18,7 @@ evidence: "partial"
 Accepted (retroactive record of a decision already embodied in the code).
 
 ## Context
-Ingest consumes batches of 100, writes them in one DB transaction, then calls `consumer.commit(asynchronous=False)` with auto-commit off (pipeline.py:66-81). The scorer uses Quix Streams (scoring.py:26-29), which manages its own commits; per Quix checkpoint semantics the offset is committed after the apply callback returns, i.e. after the per-message DB transaction (scoring.py:31) completes, but this is Quix behavior not asserted in this repo, hence evidence `partial`. R-05.
+Ingest consumes batches of 100, writes them in one DB transaction, then calls `consumer.commit(asynchronous=False)` with auto-commit off (pipeline.py:66-81). Since Phase 6 (ADR-032) the scorer is a confluent_kafka consumer with auto-commit off: per poll it runs one DB transaction, produces that batch's alerts, flushes the producer, checks delivery errors, and only then calls `consumer.commit(asynchronous=False)`. Before Phase 6 it relied on Quix checkpoint semantics, which this repo did not assert (evidence `partial`). R-05.
 
 ## Decision
 We will commit offsets only after the corresponding database transaction commits, accepting at-least-once delivery and relying on ADR-004 for idempotency.

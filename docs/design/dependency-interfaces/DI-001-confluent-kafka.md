@@ -16,7 +16,7 @@ constrained_by_adrs: ["ADR-001", "ADR-002", "ADR-005", "ADR-006", "ADR-017"]
 # DI-001: confluent-kafka
 
 ## Purpose
-Producer and consumer client (librdkafka) for the Redpanda broker `kafka:9092` (compose.yaml:3-4). Topics `transactions` and `alerts`, 1 partition each (compose.yaml:14).
+Producer and consumer client (librdkafka) for the Redpanda broker `kafka:9092` (compose.yaml:3-4). Topics `transactions` (16 partitions, account-keyed, ADR-033) and `alerts` (1 partition), created by the `topic` service in compose.yaml. Since Phase 6 the scorer also uses this client (ADR-032).
 
 ## Classes/Methods/Functions Used
 - `Producer({"bootstrap.servers", "enable.idempotence": True})`, `list_topics`, `produce(key, value, on_delivery)`, `poll`, `flush` (pipeline.py:29-47); `Producer(... linger.ms=0)` (latency.py:37).
