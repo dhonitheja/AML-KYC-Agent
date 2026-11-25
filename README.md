@@ -85,7 +85,7 @@ docker compose -f compose.yaml -f compose.anthropic.yaml up -d
 
 If you use the override with `LLM_MODE` unset, the stub runs with a route out. No code path uses it.
 
-Evaluation. `tests/eval/scenarios.json` runs against the stub in CI. To measure the real model on the same synthetic scenarios, run `docker compose -f compose.yaml -f compose.anthropic.yaml run --rm -v "${PWD}\eval:/out" --entrypoint python investigator eval_investigator.py /out/eval-report.json` with the variables above. The container user cannot write to `/app`, so the report goes to the mounted `eval\` folder (on a Linux host, also pass `-u "$(id -u)"`). It writes `eval-report.json` and prints the grounding-failure, citation-violation and recommendation-agreement rates. It refuses to run unless `LLM_MODE=anthropic` and `DATA_CLASSIFICATION=synthetic`.
+Evaluation. `tests/eval/scenarios.json` runs against the stub in CI. To measure the real model on the same synthetic scenarios, run `docker compose -f compose.yaml -f compose.anthropic.yaml run --rm -v "${PWD}\eval:/out" --entrypoint python investigator eval_investigator.py /out/eval-report.json` with the variables above. The container user cannot write to `/app`, so the report goes to the mounted `eval\` folder (On a Linux host, first run `mkdir -p eval` as yourself and add `-u "$(id -u)"`, so the container can write there.). It writes `eval-report.json` and prints the grounding-failure, citation-violation and recommendation-agreement rates. It refuses to run unless `LLM_MODE=anthropic` and `DATA_CLASSIFICATION=synthetic`.
 
 ### Networks
 

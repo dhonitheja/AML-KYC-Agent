@@ -29,7 +29,7 @@ Two consumer groups read `transactions` independently: `aml-ingest-v1` (ingest) 
 |---------|--------------|-----|
 | ingest | `Consumer` group `aml-ingest-v1`, earliest, auto-commit off; one autocommit psycopg connection as `aml_worker` | pipeline.py:66-70 |
 | scorer | confluent_kafka `Consumer` group `aml-scorer-v1`, earliest, manual commit, plus an idempotent `Producer` with `linger.ms=1` (ADR-032); Redis client registers Lua `VELOCITY`; psycopg connection, `dict_row` | scoring.py:26-29 |
-| scorer wiring | `app.dataframe(topic(TOPIC, json)).apply(score)`; `filter(alert).to_topic("alerts")`; `app.run()` | scoring.py:52-54 |
+| scorer wiring | `consumer.consume(500, timeout=0.02)` -> `score_batch` in one `db.transaction()` -> `forget_counts` -> produce alerts, `flush`, check delivery errors -> `consumer.commit(asynchronous=False)` | scoring.py `run` |
 | watchlist | First `active()` call parses `SDN_FILE` (default `watchlists/sample.xml`) with `defusedxml`; cached by (path, mtime, size); version = SHA-256 | watchlist.py:94-102,68-91 |
 | startup order | topics and migrations complete before scorer/api (`depends_on`) | compose.yaml:11-16,34-41,48-51,60-61 |
 | investigator (PHASE 4) | Builds its DSN from `INVESTIGATOR_DB_HOST` and the password in `/run/secrets/investigator_db_password` (`INVESTIGATOR_DB_PASSWORD_FILE`; fails fast if missing, no fallback to `aml_worker`); `DATA_CLASSIFICATION` gate first (section 2a); `LLM_MODE` (`stub` default; `local` needs `LOCAL_LLM_URL` and `LLM_MODEL`; unknown value fails fast); key from `/run/secrets/anthropic_api_key` only if `anthropic` and the gate passed; asserts `alerts` has 1 partition; `Consumer` group `aml-investigator-v1`, `enable.auto.commit=false`; `max.poll.interval.ms >= LLM_TIMEOUT_SECONDS x LLM_MAX_ATTEMPTS + backoff + 60 s` | D1, D2, D5, D6, FR-010 |
@@ -53,17 +53,19 @@ Network gate (independent): in the default Compose files the investigator has no
 
 `ingest()` consumes batches of up to 100 (pipeline.py:72); inside one DB transaction it calls `record_transaction()` per message (pipeline.py:75-80), which does `INSERT ... ON CONFLICT(id) DO NOTHING RETURNING id` and, only if a row was inserted, writes the `transaction.recorded` audit row with Kafka origin (pipeline.py:52-59). A `msg.error()` raises (pipeline.py:77-78). After the transaction commits, `consumer.commit(asynchronous=False)` (pipeline.py:81).
 
-### 3b. Scoring path (BUILT) - one DB transaction per message, `score()` (scoring.py:30-51)
+### 3b. Scoring path (BUILT) - one DB transaction per poll, `score_batch()` (ADR-032)
+
+The steps run once per batch (up to 500 messages, partition order); per-event work is in steps 4 and 6.
 
 | Step | Action | Ref |
 |------|--------|-----|
-| 1 | `record_transaction()` again, so ingest and scorer race safely: whichever inserts first writes the single `transaction.recorded` row (unique index) | scoring.py:32; sql/002-scoring.sql:3 |
-| 2 | `payment_screen()`: only for debits; insert (account, normalized counterparty, snapshot) `ON CONFLICT DO NOTHING`; if newly inserted, screen with RapidFuzz >= 88 and write `payment.screened.v1` | scoring.py:33; kyc.py:81-90; watchlist.py:47 |
-| 3 | Replay check: if a `scored.v1` row exists, return its `inputs` and stop (no new rows; the replayed result is returned downstream so the alert can be re-published) | scoring.py:34-37 |
-| 4 | Velocity: Lua `ZADD NX`, trim to 48 h, `EXPIRE`, return 1-min and 1-h counts at event time | scoring.py:39,15-22 |
-| 5 | History: the account's previously *scored* transactions in the 48 h before the event, ordered | scoring.py:40-43 |
+| 1 | `record_transactions()` for the batch (Kafka partition and offset in `transaction.recorded`), so ingest and scorer race safely: whichever inserts first writes the single `transaction.recorded` row (unique index) | scoring.py:32; sql/002-scoring.sql:3 |
+| 2 | `payment_screen_batch()`: only for debits; insert (account, normalized counterparty, snapshot) `ON CONFLICT DO NOTHING`; if newly inserted, screen with RapidFuzz >= 88 and write `payment.screened.v1` | scoring.py:33; kyc.py:81-90; watchlist.py:47 |
+| 3 | Replay check, one query for the batch: an event with a `scored.v1` row (or a duplicate earlier in the batch) reuses its `inputs` (no new rows; the replayed result is returned downstream so the alert can be re-published) | scoring.py:34-37 |
+| 4 | Velocity, one Redis pipeline: stored first counts if present (retry), else `ZADD NX`, trim to 48 h, 1-min and 1-h counts at event time, stored until `forget_counts` runs after the commit | scoring.py:39,15-22 |
+| 5 | History: one prefetch of the batch accounts' *scored* transactions, extended in memory as each event is scored | scoring.py:40-43 |
 | 6 | `assess(row, minute_count, hour_count, history)` pure function: seven rules, score capped at 100, `alert = score >= 60` | scoring.py:44; rules.py:2-31 |
-| 7 | Insert `scored.v1` (+ `alerted.v1` if alert) with actor `scorer-v1` and `inputs = result`; unique indexes make duplicates impossible | scoring.py:45-50; sql/002-scoring.sql:4 |
+| 7 | COPY `scored.v1` (+ `alerted.v1` if alert) with actor `scorer-v1` and `inputs = result`; unique indexes make duplicates impossible | scoring.py:45-50; sql/002-scoring.sql:4 |
 
 ## 4. Result Assembly
 
@@ -100,12 +102,12 @@ Producer   Redpanda      ingest        scorer        Redis     Postgres      inv
    |   pipeline.py:44      |--consume--->|             |           |               |                |
    |                       |             |--record_transaction---->| (txn.recorded)|                |
    |                       |--consume------------------>           |               |                |
-   |                       |                  BEGIN (scoring.py:31)|               |                |
-   |                       |                  |--record_transaction->| ON CONFLICT  |                |
-   |                       |                  |--payment_screen----->| payment.screened.v1 (debit)   |
-   |                       |                  |--SELECT scored.v1--->| none => continue (:34-37)     |
-   |                       |                  |--Lua VELOCITY------->|  counts        |                |
-   |                       |                  |--history SELECT----->|  (:40-43)      |                |
+   |                       |                  BEGIN (per poll)     |               |                |
+   |                       |                  |--record_transactions>| ON CONFLICT  |                |
+   |                       |                  |--payment_screen_batch> payment.screened.v1 (debit)   |
+   |                       |                  |--SELECT scored.v1--->| new ids => continue           |
+   |                       |                  |--Lua VELOCITY (pipe)>|  counts        |                |
+   |                       |                  |--history SELECT----->|  (once)        |                |
    |                       |                  |  assess() (pure)     |               |                |
    |                       |                  |--INSERT scored.v1, alerted.v1------->|                |
    |                       |                  COMMIT                 |               |                |

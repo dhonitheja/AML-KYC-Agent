@@ -47,8 +47,9 @@ services:
     volumes: [./sql:/migrations:ro]
     secrets: [investigator_db_password]
     entrypoint: ["sh","-ec"]
-    # The password is trimmed like investigator.read_secret (str.strip) and must be non-empty before psql runs.
-    command: ["p=$$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$$//' /run/secrets/investigator_db_password); test -n \"$$p\"; printf '%s\\n' '\\i /migrations/002-scoring.sql' '\\i /migrations/003-kyc.sql' '\\i /migrations/004-investigation.sql' '\\i /migrations/005-console.sql' | psql -h postgres -U postgres -d aml -v ON_ERROR_STOP=1 -v investigator_password=\"$$p\" -f -"]
+    # The password is trimmed at both ends of the whole file, like investigator.read_secret (str.strip), must be
+    # non-empty, and reaches psql through the environment (\getenv), never an argument list.
+    command: ["p=$$(cat /run/secrets/investigator_db_password); p=\"$${p#\"$${p%%[![:space:]]*}\"}\"; p=\"$${p%\"$${p##*[![:space:]]}\"}\"; test -n \"$$p\"; export INVESTIGATOR_PASSWORD=\"$$p\"; printf '%s\\n' '\\getenv investigator_password INVESTIGATOR_PASSWORD' '\\i /migrations/002-scoring.sql' '\\i /migrations/003-kyc.sql' '\\i /migrations/004-investigation.sql' '\\i /migrations/005-console.sql' | psql -h postgres -U postgres -d aml -v ON_ERROR_STOP=1 -f -"]
     depends_on:
       postgres: {condition: service_healthy}
   scorer:

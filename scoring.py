@@ -13,9 +13,8 @@ from kyc import payment_screen_batch
 # Account-keyed Kafka input serializes updates. Use event time for windows and an idle-key expiry for retention.
 # KEYS[2] keeps each event's first counts: a batch that fails after this script ran is retried with every event
 # already in the set, and recounting would let earlier events see later ones (ZADD NX alone only dedupes members).
-# The stored counts are checked first and pruned (via KEYS[3], member -> event time) 48 h after the window, so a
-# later event in the same failed batch cannot trim away counts its retry needs.
-# ponytail: a failed batch spanning more than 96 h of event time still loses them; prune after commit if that matters.
+# The stored counts are checked first and never pruned by event time: `forget_counts` deletes them only after the
+# batch's DB commit, when the stored decision makes them unnecessary. So no later event can trim counts a retry needs.
 VELOCITY = """
 local first = redis.call('HGET', KEYS[2], ARGV[2])
 if first then
@@ -24,20 +23,12 @@ if first then
 end
 redis.call('ZADD', KEYS[1], 'NX', ARGV[1], ARGV[2])
 local latest=redis.call('ZREVRANGE',KEYS[1],0,0,'WITHSCORES')
-local cutoff=tonumber(latest[2])-172800
-redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',cutoff)
-local old=redis.call('ZRANGEBYSCORE',KEYS[3],'-inf',cutoff-172800)
-for i = 1, #old, 500 do
-  redis.call('HDEL',KEYS[2],unpack(old,i,math.min(i+499,#old)))
-end
-if #old > 0 then
-  redis.call('ZREMRANGEBYSCORE',KEYS[3],'-inf',cutoff-172800)
-end
+redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',tonumber(latest[2])-172800)
 local counts={redis.call('ZCOUNT',KEYS[1],'('..(ARGV[1]-60),ARGV[1]),
               redis.call('ZCOUNT',KEYS[1],'('..(ARGV[1]-3600),ARGV[1])}
 redis.call('HSET',KEYS[2],ARGV[2],counts[1]..','..counts[2])
-redis.call('ZADD',KEYS[3],ARGV[1],ARGV[2])
-for i = 1, 3 do redis.call('EXPIRE',KEYS[i],345600) end
+redis.call('EXPIRE',KEYS[1],172800)
+redis.call('EXPIRE',KEYS[2],172800)
 return counts
 """
 BATCH = 500
@@ -69,7 +60,7 @@ def score_batch(db, velocity_script, redis, rows, origins=None):
     if fresh:
         pipe = redis.pipeline(transaction=False)  # Redis runs these in order, so per-key counts match one-by-one
         for row, at in fresh:
-            velocity_script(keys=[k + row["account"] for k in ("velocity:", "velocity-counts:", "velocity-counted:")],
+            velocity_script(keys=["velocity:" + row["account"], "velocity-counts:" + row["account"]],
                             args=[at.timestamp(), row["id"]], client=pipe)
         counts = pipe.execute()
         history = {}
@@ -91,6 +82,15 @@ def score_batch(db, velocity_script, redis, rows, origins=None):
     return [previous[row["id"]] for row in rows]
 
 
+def forget_counts(redis, rows):
+    """After the DB commit: the stored decisions replace the retry counts. A crash before this only leaves
+    entries that the key's 48 h idle expiry removes."""
+    pipe = redis.pipeline(transaction=False)
+    for row in rows:
+        pipe.hdel("velocity-counts:" + row["account"], row["id"])
+    pipe.execute()
+
+
 def run():
     """One DB transaction per polled batch (ADR-032). Alerts are produced only after the DB commit and offsets
     are committed only after the producer flush, so a crash replays the batch and reuses the stored decisions."""
@@ -110,10 +110,12 @@ def run():
                 for msg in batch:
                     if msg.error():
                         raise RuntimeError(msg.error())
+                rows = [json.loads(msg.value()) for msg in batch]
                 with db.transaction():
-                    results = score_batch(db, velocity, redis, [json.loads(msg.value()) for msg in batch],
+                    results = score_batch(db, velocity, redis, rows,
                                           [dict(topic=msg.topic(), partition=msg.partition(), offset=msg.offset())
                                            for msg in batch])
+                forget_counts(redis, rows)  # ids were canonicalized in place by record_transactions
                 failed = []
                 for msg, result in zip(batch, results):
                     if result["alert"]:

@@ -55,7 +55,7 @@ Snapshot `version` SHALL be the SHA-256 of the raw file bytes. `active()` SHALL 
 
 **Acceptance Criteria:**
 - AC-1: Same bytes give same version; any byte change gives a different version.
-- AC-2: Replacing the file with a new mtime or size invalidates the cache key (path, mtime_ns, size); `refresh()` always does, because `os.replace` gives the new file a new mtime. A same-size copy that preserves the timestamp is not detected: restart `api` and `scorer` after such an out-of-band change.
+- AC-2: The cache key is (path, mtime_ns, size), so a replacement with a new mtime or size invalidates it. `refresh()` writes `watchlists/sdn.xml` through `os.replace`, which normally gives a new mtime; screening uses that file only when `SDN_FILE` points to it (the default is `watchlists/sample.xml`). A same-size change that keeps the timestamp, including on a filesystem with coarse timestamps, is not detected: restart `api` and `scorer` after it.
 - AC-3: With `SDN_FILE` unset, `active()` loads `watchlists/sample.xml` (watchlist.py DEFAULT); with `SDN_FILE=<path>` it loads that file.
 
 ### FR-006.6: OFAC loader

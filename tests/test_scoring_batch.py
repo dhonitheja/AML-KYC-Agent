@@ -8,7 +8,7 @@ from psycopg.rows import dict_row
 from redis import Redis
 
 from pipeline import DSN
-from scoring import VELOCITY, in_window, score_batch
+from scoring import VELOCITY, forget_counts, in_window, score_batch
 
 T0 = datetime(2026, 11, 20, 12, tzinfo=timezone.utc)
 
@@ -87,7 +87,8 @@ def test_failed_batch_retry_keeps_counts_trimmed_by_a_later_event():
     redis = Redis(host="redis")
     script = redis.register_script(VELOCITY)
     rows = scenario(f"BATCH-{uuid.uuid4().hex[:10]}")
-    late = dict(rows[0], id=str(uuid.uuid4()), occurred_at=(T0 + timedelta(hours=49)).isoformat())
+    # 97 h: past any event-time retention of the counts, which therefore must not be pruned by event time at all
+    late = dict(rows[0], id=str(uuid.uuid4()), occurred_at=(T0 + timedelta(hours=97)).isoformat())
     with psycopg.connect(DSN, autocommit=True, row_factory=dict_row) as db:
         try:
             with db.transaction():
@@ -101,20 +102,29 @@ def test_failed_batch_retry_keeps_counts_trimmed_by_a_later_event():
     assert any(h["rule"] == "minute_velocity" for r in retried for h in r["rules"])  # the burst still counts
 
 
-def test_velocity_prunes_thousands_of_expired_events_in_one_call():
-    """Expiring more members than Lua's unpack() limit must not fail the script (HDEL is chunked).
-    Stored counts are kept 48 h past the window, so they go once the latest event is 96 h newer."""
+def test_velocity_trims_thousands_of_expired_events_in_one_call():
+    """Trimming many members is one ZREMRANGEBYSCORE; stored counts are left for forget_counts."""
     redis = Redis(host="redis")
     script = redis.register_script(VELOCITY)
     account = f"BATCH-{uuid.uuid4().hex[:10]}"
-    keys = ["velocity:" + account, "velocity-counts:" + account, "velocity-counted:" + account]
+    keys = ["velocity:" + account, "velocity-counts:" + account]
     start = T0.timestamp()
     redis.zadd(keys[0], {f"old-{i}": start for i in range(9000)})
-    redis.hset(keys[1], mapping={f"old-{i}": "1,1" for i in range(9000)})
-    redis.zadd(keys[2], {f"old-{i}": start for i in range(9000)})
-    assert script(keys=keys, args=[start + 97 * 3600, "new"]) == [1, 1]
-    assert redis.zcard(keys[0]) == 1 and redis.hlen(keys[1]) == 1 and redis.zcard(keys[2]) == 1
+    assert script(keys=keys, args=[start + 49 * 3600, "new"]) == [1, 1]
+    assert redis.zcard(keys[0]) == 1 and redis.hget(keys[1], "new") == b"1,1"
     redis.delete(*keys)
+
+
+def test_forget_counts_after_commit():
+    redis = Redis(host="redis")
+    script = redis.register_script(VELOCITY)
+    rows = scenario(f"BATCH-{uuid.uuid4().hex[:10]}")[:3]
+    with psycopg.connect(DSN, autocommit=True, row_factory=dict_row) as db:
+        with db.transaction():
+            score_batch(db, script, redis, rows)
+    assert redis.hlen("velocity-counts:" + rows[0]["account"]) == 3
+    forget_counts(redis, rows)
+    assert redis.hlen("velocity-counts:" + rows[0]["account"]) == 0
 
 
 def test_uppercase_ids_are_recorded_once_and_replays_reuse_the_decision():

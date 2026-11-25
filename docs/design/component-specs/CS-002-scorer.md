@@ -27,7 +27,7 @@ v1.1 (Phase 6): batched confluent_kafka scorer (ADR-032) over a 16-partition top
 
 ## Internal Data Structures
 - Redis `velocity:<account>` sorted set (event-time epoch, transaction id), trimmed to 48 h before the latest event.
-- Redis `velocity-counts:<account>` hash (id -> first "minute,hour" counts) and `velocity-counted:<account>` sorted set (id -> event time). Stored counts are returned on a retry and pruned 48 h after the window.
+- Redis `velocity-counts:<account>` hash (id -> first "minute,hour" counts): returned on a retry, never pruned by event time, deleted by `forget_counts(redis, rows)` after the batch's DB commit (key idle expiry 48 h).
 - `history`: already-scored rows in the batch's 48 h range, prefetched once and extended in memory per event.
 
 ## Key Algorithms
@@ -36,7 +36,7 @@ v1.1 (Phase 6): batched confluent_kafka scorer (ADR-032) over a 16-partition top
 3. One Redis pipeline of `VELOCITY` for fresh events: stored counts if present, else `ZADD NX`, trim, ZCOUNT over (t-60,t] and (t-3600,t], store the counts.
 4. One history prefetch, then `rules.assess` per event in partition order.
 5. COPY `scored.v1`, and `alerted.v1` when score >= 60.
-6. After the DB commit: produce alerts, flush, check delivery errors, commit offsets.
+6. After the DB commit: `forget_counts`, produce alerts, flush, check delivery errors, commit offsets.
 
 ## Component Interactions
 Kafka via confluent_kafka (DI-001), Redis (DI-006), Postgres (DI-002), CS-003, CS-004. Alerts are published after the DB commit, so duplicates are possible (at-least-once); consumers (CS-008) must dedupe.

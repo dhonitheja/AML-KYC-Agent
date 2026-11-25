@@ -163,7 +163,8 @@ def test_local_without_url_exits(no_io, url):
 
 
 # Review finding: a malformed URL fails every call and leaves unretried model_failure rows, so it exits at startup.
-@pytest.mark.parametrize("url", ["not-a-url", "ftp://llm:11434", "http://", "http://llm:notaport", "http://llm:99999"])
+@pytest.mark.parametrize("url", ["not-a-url", "ftp://llm:11434", "http://", "http://llm:notaport", "http://llm:99999",
+                                 "http://bad host:11434"])
 def test_local_malformed_url_exits_without_echoing_it(no_io, url):
     message = exits(dict(LOCAL, LOCAL_LLM_URL=url))
     assert "LOCAL_LLM_URL" in message and url not in message
@@ -827,20 +828,22 @@ def test_stack_drafted_row_stub(admin, inv_db):
 
 
 # Review finding: screenings are point in time, like history; a later transaction's hit must not enter the evidence.
-def test_stack_screenings_exclude_later_transactions(admin, inv_db):
+def test_stack_screenings_match_the_alerts_counterparties(admin, inv_db):
+    """A screening reused from a later-processed debit to the same counterparty is kept (it is stored once, on
+    whichever debit came first); a screening of an unrelated later counterparty is not."""
     from psycopg.types.json import Jsonb
     from pipeline import record_transaction
     case = make_case(admin)
-    later = dict(case.debit, id=str(uuid.uuid4()), counterparty="Cobalt Meridian Exports",
-                 occurred_at=(T0 + timedelta(minutes=2000)).isoformat())
-    record_transaction(admin, later, {"topic": "pytest"})
-    for tid, hits in [(case.debit["id"], []), (later["id"], SCREEN["hits"])]:
+    same = dict(case.debit, id=str(uuid.uuid4()), occurred_at=(T0 + timedelta(minutes=2000)).isoformat())
+    other = dict(same, id=str(uuid.uuid4()), counterparty="Cobalt Meridian Exports")
+    for row, name, hits in [(same, case.debit["counterparty"], SCREEN["hits"]), (other, "Cobalt Meridian Exports", [])]:
+        record_transaction(admin, row, {"topic": "pytest"})
         admin.execute("INSERT INTO audit(actor,action,transaction_id,inputs) VALUES "
                       "('kyc-screen-v1','payment.screened.v1',%s,%s)",
-                      (tid, Jsonb(dict(SCREEN, account=case.account, hits=hits))))
+                      (row["id"], Jsonb(dict(SCREEN, account=case.account, name=name, hits=hits))))
     inv.handle(Msg(case.payload), inv_db, Counting(), stack_cfg())
     row, = outcome_rows(admin, case.debit["id"])
-    assert [s["hits"] for s in row["inputs"]["evidence"]["screenings"]] == [[]]
+    assert [s["name"] for s in row["inputs"]["evidence"]["screenings"]] == [case.debit["counterparty"]]
 
 
 # FR-009.3: case_id comes from the DB scored.v1 row, never the payload.
@@ -1232,3 +1235,8 @@ def test_stack_duplicate_insert_violates_index(admin, first, second):
         conn.rollback()
         conn.close()
     assert outcome_rows(admin, tid) == []
+
+
+@pytest.mark.parametrize("url", ["http://llm:11434", "https://10.0.0.5", "http://[::1]:11434", "http://ollama_1.internal"])
+def test_local_valid_urls_accepted(no_io, url):
+    assert load(dict(LOCAL, LOCAL_LLM_URL=url)).local_url == url

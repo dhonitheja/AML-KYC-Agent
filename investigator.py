@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 import time
 import unicodedata
 import urllib.parse
@@ -12,6 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from grounding import CHECKS, Draft, check_grounding, consistency
+from watchlist import normalize
 from llm import PROMPT_VERSION, AnthropicLLM, Failure, LocalLLM, StubLLM, complete_with_retry, is_uuid
 
 TOPIC = "alerts"
@@ -86,7 +88,8 @@ def load_model_config(env, read_key=read_secret):
             parsed.port  # raises on a non-numeric or out-of-range port
         except ValueError:
             raise SystemExit("LOCAL_LLM_URL: must be an http(s) URL with a host") from None
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        host = parsed.hostname or ""  # urlsplit does not validate host syntax; http.client rejects e.g. spaces
+        if parsed.scheme not in ("http", "https") or not re.fullmatch(r"[A-Za-z0-9._-]+|[0-9A-Fa-f:.]+", host):
             raise SystemExit("LOCAL_LLM_URL: must be an http(s) URL with a host")
         if not model:
             raise SystemExit("LLM_MODEL: required in local mode")
@@ -435,13 +438,13 @@ def handle(msg, db, llm, cfg):
             outcome = _insert(cur, row)
         else:
             history = cur.execute(HISTORY, {"account": txn["account"], "t": txn["occurred_at"], "id": tid}).fetchall()
-            # Point in time, like HISTORY: screenings of later transactions (scored in the same or a later batch
-            # before this alert arrived) must not enter this alert's evidence.
-            screenings = [r["inputs"] for r in cur.execute("""SELECT a.inputs FROM investigator_audit a
-                JOIN transactions t ON t.id=a.transaction_id
-                WHERE a.action='payment.screened.v1' AND a.inputs->>'account'=%(account)s
-                  AND t.occurred_at <= %(t)s ORDER BY a.event_id""",
-                {"account": txn["account"], "t": txn["occurred_at"], "id": tid})]
+            # Only screenings of counterparties in this alert's own transaction or point-in-time history. A screening
+            # row is stored once per (account, name, snapshot), on whichever debit was processed first, so a
+            # time cut would drop a reused screening; a name match keeps it and excludes unrelated later ones.
+            names = {normalize(t["counterparty"]) for t in [txn, *history]}
+            screenings = [r["inputs"] for r in cur.execute("""SELECT inputs FROM investigator_audit
+                WHERE action='payment.screened.v1' AND inputs->>'account'=%s ORDER BY event_id""", (txn["account"],))
+                if normalize(r["inputs"].get("name") or "") in names]
             evidence = build_evidence(alert, txn, history, scored["inputs"], screenings)
             case_id = scored["case_id"]
     if reason:
