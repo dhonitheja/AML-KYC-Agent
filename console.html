@@ -71,7 +71,8 @@ function card(a) {
       const detail = await r.json().then(j => j.detail, () => r.statusText);
       err.textContent = `${r.status}: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`;
     } catch {
-      err.textContent = "Network error, decision not recorded. Check the connection and submit again.";
+      err.textContent = "Connection lost, so the decision may or may not be recorded. Submit again: " +
+        "a conflict (409) means it already was.";
     }
   });
   return el;

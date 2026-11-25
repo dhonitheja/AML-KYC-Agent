@@ -13,10 +13,11 @@ SEED = [("Redwood Supply", 4820000, "credit", "ACH"),
         ("Terrace Imports", 8090000, "debit", "wire")]
 
 
-def event(run, i, now, seed=False, accounts=100):
+def event(run, i, now, seed=False, accounts=None):
     case_id = None
-    # Load-test accounts are scoped to the run, so each run starts with empty 48 h histories (NFR-009).
-    account = f"DEMO-{i % 100:03}" if accounts == 100 else f"LOAD-{str(run)[:8]}-{i * 7919 % accounts:05}"
+    # accounts=None: the shared demo accounts. A count: load-test accounts scoped to the run, so each run
+    # starts with empty 48 h histories and Redis state (NFR-009).
+    account = f"DEMO-{i % 100:03}" if accounts is None else f"LOAD-{str(run)[:8]}-{i * 7919 % accounts:05}"
     party, cents, direction, channel = f"Synthetic merchant {i % 47}", 1000 + i % 100000, "credit" if i % 2 else "debit", "ACH"
     if seed:
         case_id, account = "AML-1042", "DEMO-1042"
@@ -27,7 +28,7 @@ def event(run, i, now, seed=False, accounts=100):
                 channel=channel, occurred_at=now.isoformat())
 
 
-def produce(run, rate, count, seed=False, accounts=100):
+def produce(run, rate, count, seed=False, accounts=None):
     from confluent_kafka import Producer
     p = Producer({"bootstrap.servers": BROKER, "enable.idempotence": True})
     errors = []
@@ -66,6 +67,8 @@ def record_transactions(db, items):
     order, so ingest and scorer batch transactions take row locks in the same order and cannot deadlock.
     Only a newly inserted row gets a `transaction.recorded` audit entry. Returns the set of new ids."""
     from psycopg.types.json import Jsonb
+    for row, _ in items:  # canonical lowercase form, as Postgres returns it; rejects a malformed id here
+        row["id"] = str(uuid.UUID(row["id"]))
     new = {r[0] if isinstance(r, tuple) else r["id"] for r in db.execute(
         """INSERT INTO transactions(id,run_id,case_id,account,counterparty,amount_cents,direction,channel,occurred_at)
            SELECT DISTINCT ON (id) id,run_id,case_id,account,counterparty,amount_cents,direction,channel,occurred_at

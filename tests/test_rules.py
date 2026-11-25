@@ -43,3 +43,10 @@ def test_remaining_rules():
         "large_single_transfer","large_cash_activity","minute_velocity","hour_velocity",
         "multiple_credit_sources","repeated_amount"}
     assert result["score"] == 100
+
+
+def test_demo_accounts_by_default_and_load_accounts_scoped_to_the_run():
+    run, other, now = uuid.uuid4(), uuid.uuid4(), datetime.now(timezone.utc)
+    assert event(run, 7, now)["account"] == "DEMO-007"
+    assert event(run, 7, now, accounts=100)["account"].startswith(f"LOAD-{str(run)[:8]}-")  # 100 is not demo mode
+    assert event(run, 7, now, accounts=100)["account"] != event(other, 7, now, accounts=100)["account"]
