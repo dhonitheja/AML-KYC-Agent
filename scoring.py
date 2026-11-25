@@ -24,9 +24,11 @@ end
 local latest=redis.call('ZREVRANGE',KEYS[1],0,0,'WITHSCORES')
 local cutoff=tonumber(latest[2])-172800
 local old=redis.call('ZRANGEBYSCORE',KEYS[1],'-inf',cutoff)
+for i = 1, #old, 500 do
+  redis.call('HDEL',KEYS[2],unpack(old,i,math.min(i+499,#old)))
+end
 if #old > 0 then
   redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',cutoff)
-  redis.call('HDEL',KEYS[2],unpack(old))
 end
 local counts={redis.call('ZCOUNT',KEYS[1],'('..(ARGV[1]-60),ARGV[1]),
               redis.call('ZCOUNT',KEYS[1],'('..(ARGV[1]-3600),ARGV[1])}

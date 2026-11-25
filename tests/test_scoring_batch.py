@@ -80,3 +80,34 @@ def test_failed_batch_retry_keeps_first_velocity_counts():
     assert [shape_of(r) for r in retried] == [shape_of(r) for r in first]
     burst = [r for r in retried if any(h["rule"] == "minute_velocity" for h in r["rules"])]
     assert len(burst) == 1  # only the 10th same-second event reaches the minute threshold
+
+
+def test_velocity_prunes_thousands_of_expired_events_in_one_call():
+    """Expiring more members than Lua's unpack() limit must not fail the script (HDEL is chunked)."""
+    redis = Redis(host="redis")
+    script = redis.register_script(VELOCITY)
+    account = f"BATCH-{uuid.uuid4().hex[:10]}"
+    keys = ["velocity:" + account, "velocity-counts:" + account]
+    start = T0.timestamp()
+    redis.zadd(keys[0], {f"old-{i}": start for i in range(9000)})
+    redis.hset(keys[1], mapping={f"old-{i}": "1,1" for i in range(9000)})
+    assert script(keys=keys, args=[start + 49 * 3600, "new"]) == [1, 1]
+    assert redis.zcard(keys[0]) == 1 and redis.hlen(keys[1]) == 1
+    redis.delete(*keys)
+
+
+def test_uppercase_ids_are_recorded_once_and_replays_reuse_the_decision():
+    redis = Redis(host="redis")
+    script = redis.register_script(VELOCITY)
+    rows = scenario(f"BATCH-{uuid.uuid4().hex[:10]}")[:5]
+    upper = [dict(r, id=r["id"].upper()) for r in rows]
+    with psycopg.connect(DSN, autocommit=True, row_factory=dict_row) as db:
+        with db.transaction():
+            first = score_batch(db, script, redis, [dict(r) for r in upper])
+        with db.transaction():
+            replay = score_batch(db, script, redis, [dict(r) for r in upper])  # used to violate audit_score_once
+        counts = {r["action"]: r["n"] for r in db.execute(
+            "SELECT action, count(*) AS n FROM audit WHERE transaction_id = ANY(%s::uuid[]) GROUP BY action",
+            ([r["id"] for r in rows],))}
+    assert replay == first and [r["transaction_id"] for r in first] == [r["id"] for r in rows]  # lowercase
+    assert counts["transaction.recorded"] == counts["scored.v1"] == len(rows)

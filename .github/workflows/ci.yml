@@ -64,6 +64,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - run: docker compose down -v  # fresh volumes even on a persistent runner (NFR-009 is defined on them)
       - run: docker compose up --build -d
       - run: curl --retry 30 --retry-connrefused --retry-delay 2 --fail http://localhost:8000/alerts >/dev/null
       - run: docker compose stop investigator  # measure the scoring path; the investigator is a separate async consumer
