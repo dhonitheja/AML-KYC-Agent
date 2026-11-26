@@ -20,6 +20,8 @@ epic: "data-protection"
 ## Story
 As a **compliance officer**, I want **customer data to stay inside our own deployment, with no service or agent able to send it to a third party or another agent**, so that **a bug, a misconfiguration or a compromised agent cannot cause a data breach**.
 
+Accepted exception (NFR-008.3(e), ADR-028, RR-23): `api` keeps a technical outbound route through the `ingress` network. Its code makes no outbound calls, but a compromise of `api` itself is not stopped by a network control.
+
 ## Acceptance Criteria
 - [x] AC-1: Given the stack runs in the default stub mode, when the investigator or scorer container tries to open a connection to an external host, then the connection fails (NFR-008 AC-1).
 - [x] AC-2: Given the Compose configuration, when it is rendered, then postgres, redis and kafka publish no host ports and the API is bound only to 127.0.0.1 (NFR-008 AC-2).

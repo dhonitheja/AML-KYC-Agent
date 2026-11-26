@@ -89,6 +89,7 @@ def test_decision_rejects_bad_input():
     with psycopg.connect(DSN) as db:  # any real event id that is not this alert's draft
         foreign = db.execute("SELECT event_id FROM audit WHERE transaction_id=%s", (other,)).fetchone()[0]
     assert call("/console/decisions", dict(ok, draft_event_id=foreign))[0] == 422
+    assert call("/console/decisions", dict(ok, draft_event_id=add_draft(other)))[0] == 422  # a real draft, not ours
     assert call("/console/decisions", {k: v for k, v in ok.items() if k != "draft_event_id"})[0] == 422
     assert call("/console/decisions", dict(ok, transaction_id=str(uuid.uuid4())))[0] == 404
     assert call("/console/decisions", dict(ok, disposition="clear"))[0] == 422

@@ -2,7 +2,7 @@
 id: "DI-003"
 title: "Quix Streams (stream processing)"
 type: "dependency-interface"
-status: "approved"
+status: "superseded"
 version: "1.0"
 created: "2026-11-22"
 author: "component-spec-author-agent"
@@ -15,6 +15,8 @@ constrained_by_adrs: ["ADR-002", "ADR-005", "ADR-006"]
 ---
 
 # DI-003: quixstreams
+
+**Superseded in Phase 6 (ADR-032).** `quixstreams` was removed from requirements.txt; the scorer is a confluent_kafka consumer with manual commits (DI-001, CS-002 v1.1). The rest of this page describes the Phase 2-5 design and is kept for history.
 
 ## Purpose
 Dataframe-style consume/transform/produce loop for the scorer (scoring.py:25-54).

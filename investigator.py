@@ -2,8 +2,10 @@
 import hashlib
 import json
 import os
+import re
 import time
 import unicodedata
+import urllib.parse
 import uuid
 from dataclasses import dataclass, field
 from typing import Literal
@@ -11,6 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from grounding import CHECKS, Draft, check_grounding, consistency
+from watchlist import normalize
 from llm import PROMPT_VERSION, AnthropicLLM, Failure, LocalLLM, StubLLM, complete_with_retry, is_uuid
 
 TOPIC = "alerts"
@@ -80,6 +83,16 @@ def load_model_config(env, read_key=read_secret):
         url, model = get("LOCAL_LLM_URL"), get("LLM_MODEL")
         if not url:
             raise SystemExit("LOCAL_LLM_URL: required in local mode")
+        try:  # a bad URL fails every call, and model_failure rows are never retried, so reject it at startup
+            parsed = urllib.parse.urlsplit(url)
+            parsed.port  # raises on a non-numeric or out-of-range port
+        except ValueError:
+            raise SystemExit("LOCAL_LLM_URL: must be an http(s) URL with a host") from None
+        host = parsed.hostname or ""  # urlsplit does not validate host syntax; http.client rejects e.g. spaces
+        # "?" or "#" would swallow the appended /api/chat (query) or drop it (fragment), so every call would 404
+        if (parsed.scheme not in ("http", "https") or "?" in url or "#" in url
+                or not re.fullmatch(r"[A-Za-z0-9._-]+|[0-9A-Fa-f:.]+", host)):
+            raise SystemExit("LOCAL_LLM_URL: must be an http(s) URL with a host")
         if not model:
             raise SystemExit("LLM_MODEL: required in local mode")
         return ModelConfig(llm_mode=mode, data_classification=classification, model=model, local_url=url)
@@ -259,6 +272,15 @@ def render_prompt(evidence):
     return SYSTEM, user, sha256(SYSTEM + "\n" + user)
 
 
+def _has_nul(value):
+    """A real U+0000 in any decoded string (not the six-character text backslash-u0000)."""
+    if isinstance(value, str):
+        return "\x00" in value
+    if isinstance(value, dict):
+        value = value.values()
+    return isinstance(value, (list, type({}.values()))) and any(_has_nul(v) for v in value)
+
+
 def validate_draft(raw, evidence_ids, fired_rules):
     """Draft on success, else an error tag: schema | citation | rule. Never raises."""
     try:
@@ -273,6 +295,8 @@ def validate_draft(raw, evidence_ids, fired_rules):
         return "citation"
     if any(f.rule is not None and f.rule not in fired_rules for f in draft.findings):
         return "rule"
+    if _has_nul(draft.model_dump()):  # PostgreSQL jsonb rejects U+0000; the insert would crash the consumer
+        return "schema"
     return draft
 
 
@@ -313,7 +337,9 @@ def build_drafted_row(alert, txn, evidence, evidence_sha256, prompt_sha256, para
     data_classification from validated config only."""
     tid = str(txn["id"])
     reason = consistency(draft, evidence)
-    inputs = {"alert_key": tid, "alert": alert.model_dump(mode="json"), "evidence": evidence,
+    # The payload is untrusted (only the pointer is checked against the DB): clean it like evidence, so e.g. a
+    # U+0000 in case_id cannot make the jsonb insert fail and stall the consumer on every redelivery.
+    inputs = {"alert_key": tid, "alert": _clean_all(alert.model_dump(mode="json")), "evidence": evidence,
               "evidence_sha256": evidence_sha256, "prompt_sha256": prompt_sha256, "params": params,
               "draft": draft.model_dump(), "ai_generated": True, "requires_human_review": True,
               "grounding": {"checks": list(CHECKS), "passed": True, "attempts": attempts},
@@ -423,8 +449,13 @@ def handle(msg, db, llm, cfg):
             outcome = _insert(cur, row)
         else:
             history = cur.execute(HISTORY, {"account": txn["account"], "t": txn["occurred_at"], "id": tid}).fetchall()
+            # Only screenings of counterparties in this alert's own transaction or point-in-time history. A screening
+            # row is stored once per (account, name, snapshot), on whichever debit was processed first, so a
+            # time cut would drop a reused screening; a name match keeps it and excludes unrelated later ones.
+            names = {normalize(t["counterparty"]) for t in [txn, *history]}
             screenings = [r["inputs"] for r in cur.execute("""SELECT inputs FROM investigator_audit
-                WHERE action='payment.screened.v1' AND inputs->>'account'=%s ORDER BY event_id""", (txn["account"],))]
+                WHERE action='payment.screened.v1' AND inputs->>'account'=%s ORDER BY event_id""", (txn["account"],))
+                if normalize(r["inputs"].get("name") or "") in names]
             evidence = build_evidence(alert, txn, history, scored["inputs"], screenings)
             case_id = scored["case_id"]
     if reason:

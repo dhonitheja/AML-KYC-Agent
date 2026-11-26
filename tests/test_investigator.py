@@ -162,6 +162,14 @@ def test_local_without_url_exits(no_io, url):
     assert "LOCAL_LLM_URL" in exits(env)
 
 
+# Review finding: a malformed URL fails every call and leaves unretried model_failure rows, so it exits at startup.
+@pytest.mark.parametrize("url", ["not-a-url", "ftp://llm:11434", "http://", "http://llm:notaport", "http://llm:99999",
+                                 "http://bad host:11434", "http://llm:11434/?x=1", "http://llm:11434/#local"])
+def test_local_malformed_url_exits_without_echoing_it(no_io, url):
+    message = exits(dict(LOCAL, LOCAL_LLM_URL=url))
+    assert "LOCAL_LLM_URL" in message and url not in message
+
+
 # FR-010.5 AC-2, US-029 AC-2: local without LLM_MODEL exits (no default).
 @pytest.mark.parametrize("model", [None, "", "  "])
 def test_local_without_model_exits(no_io, model):
@@ -562,6 +570,22 @@ def test_build_drafted_row_labels(classification):
     assert i["consistency_warning"] is False
 
 
+# Review findings: PostgreSQL jsonb rejects U+0000, so neither the untrusted alert payload nor a model draft
+# may carry one into the audit row (the insert would fail on every redelivery).
+def test_drafted_row_strips_nul_from_alert_payload():
+    alert = alert_of(scored_inputs(case_id="AML\u00001042"))
+    row = inv.build_drafted_row(alert, txn_row(), evidence(), "e" * 64, "p" * 64, {}, stub_draft(evidence()),
+                                "stub-v1", data_classification="customer")
+    assert "\\u0000" not in json.dumps(row["inputs"]) and row["inputs"]["alert"]["case_id"] == "AML1042"
+
+
+def test_draft_with_nul_is_rejected_as_schema():
+    ev = evidence()
+    data = stub_draft(ev).model_dump()
+    data["summary"] = "reviewed\u0000"
+    assert inv.validate_draft(json.dumps(data), inv.evidence_ids(ev), {r["rule"] for r in ev["rules"]}) == "schema"
+
+
 # FR-011.3 AC-1: consistency warning stored; the recommendation is never changed.
 def test_build_drafted_row_consistency_warning():
     ev = evidence()
@@ -801,6 +825,25 @@ def test_stack_drafted_row_stub(admin, inv_db):
     assert i["evidence_sha256"] == hashlib.sha256(
         json.dumps(i["evidence"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     assert model.calls == 1
+
+
+# Review finding: screenings are point in time, like history; a later transaction's hit must not enter the evidence.
+def test_stack_screenings_match_the_alerts_counterparties(admin, inv_db):
+    """A screening reused from a later-processed debit to the same counterparty is kept (it is stored once, on
+    whichever debit came first); a screening of an unrelated later counterparty is not."""
+    from psycopg.types.json import Jsonb
+    from pipeline import record_transaction
+    case = make_case(admin)
+    same = dict(case.debit, id=str(uuid.uuid4()), occurred_at=(T0 + timedelta(minutes=2000)).isoformat())
+    other = dict(same, id=str(uuid.uuid4()), counterparty="Cobalt Meridian Exports")
+    for row, name, hits in [(same, case.debit["counterparty"], SCREEN["hits"]), (other, "Cobalt Meridian Exports", [])]:
+        record_transaction(admin, row, {"topic": "pytest"})
+        admin.execute("INSERT INTO audit(actor,action,transaction_id,inputs) VALUES "
+                      "('kyc-screen-v1','payment.screened.v1',%s,%s)",
+                      (row["id"], Jsonb(dict(SCREEN, account=case.account, name=name, hits=hits))))
+    inv.handle(Msg(case.payload), inv_db, Counting(), stack_cfg())
+    row, = outcome_rows(admin, case.debit["id"])
+    assert [s["name"] for s in row["inputs"]["evidence"]["screenings"]] == [case.debit["counterparty"]]
 
 
 # FR-009.3: case_id comes from the DB scored.v1 row, never the payload.
@@ -1192,3 +1235,16 @@ def test_stack_duplicate_insert_violates_index(admin, first, second):
         conn.rollback()
         conn.close()
     assert outcome_rows(admin, tid) == []
+
+
+@pytest.mark.parametrize("url", ["http://llm:11434", "https://10.0.0.5", "http://[::1]:11434", "http://ollama_1.internal"])
+def test_local_valid_urls_accepted(no_io, url):
+    assert load(dict(LOCAL, LOCAL_LLM_URL=url)).local_url == url
+
+
+def test_draft_with_literal_backslash_u0000_text_is_accepted():
+    ev = evidence()
+    data = stub_draft(ev).model_dump()
+    data["summary"] = data["summary"] + " (escape text " + chr(92) + "u0000)"  # six characters, no NUL
+    assert isinstance(inv.validate_draft(json.dumps(data), inv.evidence_ids(ev), {r["rule"] for r in ev["rules"]}),
+                      Draft)

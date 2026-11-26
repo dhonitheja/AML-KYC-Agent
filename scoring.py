@@ -13,23 +13,17 @@ from kyc import payment_screen_batch
 # Account-keyed Kafka input serializes updates. Use event time for windows and an idle-key expiry for retention.
 # KEYS[2] keeps each event's first counts: a batch that fails after this script ran is retried with every event
 # already in the set, and recounting would let earlier events see later ones (ZADD NX alone only dedupes members).
+# The stored counts are checked first and never pruned by event time: `forget_counts` deletes them only after the
+# batch's DB commit, when the stored decision makes them unnecessary. So no later event can trim counts a retry needs.
 VELOCITY = """
-if redis.call('ZADD', KEYS[1], 'NX', ARGV[1], ARGV[2]) == 0 then
-  local first = redis.call('HGET', KEYS[2], ARGV[2])
-  if first then
-    local sep = string.find(first, ',')
-    return {tonumber(string.sub(first, 1, sep - 1)), tonumber(string.sub(first, sep + 1))}
-  end
+local first = redis.call('HGET', KEYS[2], ARGV[2])
+if first then
+  local sep = string.find(first, ',')
+  return {tonumber(string.sub(first, 1, sep - 1)), tonumber(string.sub(first, sep + 1))}
 end
+redis.call('ZADD', KEYS[1], 'NX', ARGV[1], ARGV[2])
 local latest=redis.call('ZREVRANGE',KEYS[1],0,0,'WITHSCORES')
-local cutoff=tonumber(latest[2])-172800
-local old=redis.call('ZRANGEBYSCORE',KEYS[1],'-inf',cutoff)
-for i = 1, #old, 500 do
-  redis.call('HDEL',KEYS[2],unpack(old,i,math.min(i+499,#old)))
-end
-if #old > 0 then
-  redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',cutoff)
-end
+redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',tonumber(latest[2])-172800)
 local counts={redis.call('ZCOUNT',KEYS[1],'('..(ARGV[1]-60),ARGV[1]),
               redis.call('ZCOUNT',KEYS[1],'('..(ARGV[1]-3600),ARGV[1])}
 redis.call('HSET',KEYS[2],ARGV[2],counts[1]..','..counts[2])
@@ -46,11 +40,13 @@ def in_window(history, at):
     return [item for occurred, _, item in sorted(history, key=lambda h: h[:2]) if at - WINDOW <= occurred <= at]
 
 
-def score_batch(db, velocity_script, redis, rows):
+def score_batch(db, velocity_script, redis, rows, origins=None):
     """Score rows in order inside the caller's transaction. Returns one result per row.
+    origins: per-row Kafka coordinates (topic, partition, offset) for the transaction.recorded row (FR-001.1).
     Per batch: one prior-score lookup, one history prefetch, one Redis pipeline and batched inserts,
     instead of about eight round trips per event."""
-    record_transactions(db, [(row, {"topic": TOPIC, "account_key": row["account"]}) for row in rows])
+    origins = origins or [{"topic": TOPIC}] * len(rows)
+    record_transactions(db, [(row, dict(origin, account_key=row["account"])) for row, origin in zip(rows, origins)])
     payment_screen_batch(db, rows)
     ids = [row["id"] for row in rows]
     previous = {r["id"]: r["inputs"] for r in db.execute(
@@ -86,6 +82,15 @@ def score_batch(db, velocity_script, redis, rows):
     return [previous[row["id"]] for row in rows]
 
 
+def forget_counts(redis, rows):
+    """After the DB commit: the stored decisions replace the retry counts. A crash before this only leaves
+    entries that the key's 48 h idle expiry removes."""
+    pipe = redis.pipeline(transaction=False)
+    for row in rows:
+        pipe.hdel("velocity-counts:" + row["account"], row["id"])
+    pipe.execute()
+
+
 def run():
     """One DB transaction per polled batch (ADR-032). Alerts are produced only after the DB commit and offsets
     are committed only after the producer flush, so a crash replays the batch and reuses the stored decisions."""
@@ -105,8 +110,12 @@ def run():
                 for msg in batch:
                     if msg.error():
                         raise RuntimeError(msg.error())
+                rows = [json.loads(msg.value()) for msg in batch]
                 with db.transaction():
-                    results = score_batch(db, velocity, redis, [json.loads(msg.value()) for msg in batch])
+                    results = score_batch(db, velocity, redis, rows,
+                                          [dict(topic=msg.topic(), partition=msg.partition(), offset=msg.offset())
+                                           for msg in batch])
+                forget_counts(redis, rows)  # ids were canonicalized in place by record_transactions
                 failed = []
                 for msg, result in zip(batch, results):
                     if result["alert"]:

@@ -29,7 +29,7 @@ We will declare three Compose networks and place services by membership (ARCH-00
 
 We will move the OFAC download out of `ingest` into a dedicated one-shot `watchlist-fetch` service: Compose profile `fetch` (never starts by default), `egress` only and not on `internal`, no secrets, no DB connection, and its only write mount is `./watchlists` (read-only for api and scorer). Parse and integrity checks stay as in ADR-010.
 
-We will keep `api` with its technical outbound route through `ingress` and record it as accepted residual risk RR-23, controlled by the NFR-008 AC-5 grep (no outbound calls in api code), non-root user (ADR-026) and no secrets.
+We will keep `api` with its technical outbound route through `ingress` and record it as accepted residual risk RR-23, controlled by the NFR-008 AC-5 grep (no outbound calls in api code), and non-root user (ADR-026). Since Phase 5 `api` also holds the `analysts` secret (console credentials, ADR-031); non-root execution does not stop the api process reading its own mounted secret, so a code or dependency compromise of `api` could send those credentials out through this route. That is part of the accepted RR-23.
 
 We will disable Redpanda usage telemetry explicitly in the `kafka` command; the exact flag is verified against the pinned v24.3.10 image in Develop, so the intent is in config and not only implied by network state.
 

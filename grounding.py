@@ -8,7 +8,7 @@ from watchlist import normalize
 CHECKS = ["amounts", "counterparties", "rules", "sanctions"]
 RECOMMENDATIONS = ("escalate_for_review", "no_further_action_suggested")
 MONEY = re.compile(r"\$\s?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?!\w|[.,]\d)")
-MONEY_START = re.compile(r"\$\s?\d")
+MONEY_START = re.compile(r"\$\s*\d")  # wider than MONEY, so "$  100" counts as malformed, not unchecked
 RULE = re.compile(r"\b[a-z]+(?:_[a-z]+)+\b")
 SANCTIONS = re.compile(r"\b(?:sanctions|sanctioned|sanction|ofac|sdn|watchlist match|screening hit)\b", re.IGNORECASE)
 QUOTED = re.compile(r'"([^"]*)"')
@@ -65,7 +65,11 @@ def check_grounding(draft, evidence):
     parts += [(f.statement, f.cited_transaction_ids) for f in draft.findings]
     failed = set()
     for text, cited in parts:
-        allowed = set(amounts.values()) | {sum(amounts[i] for i in cited if i in amounts)}
+        # A cited total counts each transaction once, and only when every cited id has a known amount:
+        # repeating an id must not double a sum, and an id with no amount must not vouch for $0.00.
+        allowed = set(amounts.values())
+        if set(cited) <= amounts.keys():
+            allowed.add(sum(amounts[i] for i in set(cited)))
         cents = money(text)
         if cents is None or not set(cents) <= allowed:
             failed.add("amounts")

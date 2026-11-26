@@ -100,4 +100,13 @@ def payment_screen_batch(db,rows):
                 new.append(row)
             cur.nextset()
     copy_audit(db,[("kyc-screen-v1","payment.screened.v1",row["case_id"],row["id"],
-                    dict(account=row["account"],**snapshot.screen(row["counterparty"]))) for row in new])
+                    dict(account=row["account"],**screen_payment(snapshot,row["counterparty"]))) for row in new])
+
+
+def screen_payment(snapshot,name):
+    """A counterparty with no screenable characters (e.g. "!!!") is recorded as unscreenable for analyst review,
+    instead of raising inside the scorer batch, which would stop its partition on every redelivery."""
+    if not normalize(name):
+        return dict(name=name,snapshot=snapshot.version,threshold=88,hits=[],unscreenable=True,
+                    reason="Counterparty name has no screenable characters; requires analyst review.")
+    return snapshot.screen(name)

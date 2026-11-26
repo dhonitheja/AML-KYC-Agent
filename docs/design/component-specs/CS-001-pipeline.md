@@ -39,7 +39,7 @@ Event dict: `id, run_id, case_id, account, counterparty, amount_cents, direction
 Produces to Kafka `transactions`; consumes it; writes `transactions` and `audit` via psycopg as `aml_worker` (DI-001, DI-002). `record_transaction` is also called by CS-002.
 
 ## Invariants
-- `record_transaction` is the only transaction write path.
+- `record_transactions(db, items)` is the only transaction write path (batched, id order, ADR-032); `record_transaction` is its one-row wrapper.
 - No UPDATE/DELETE issued (NFR-003).
 - All services run from one image; the Dockerfile must run as non-root (`useradd --system --uid 10001 app`, `USER app`), so bind-mounted `watchlists/` must be world-readable (watchlist.py:114 sets 0644).
 - Config is hard-coded; the new investigator (CS-008) MUST NOT reuse `DSN` or the `aml_worker` role.

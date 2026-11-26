@@ -119,6 +119,21 @@ def test_sum_of_uncited_transactions_fails():
     assert "amounts" in check_grounding(draft(summary="credits totalled $83,800.00."), ev([8090000, 4820000, 3560000]))
 
 
+# Review findings: a repeated citation must not double a total, an id without an amount must not allow $0.00,
+# and extra spaces after "$" make the amount malformed rather than unchecked.
+def test_repeated_citation_does_not_double_the_total():
+    assert "amounts" in check_grounding(draft(summary="paid $161,800.00.", cited=(TX, TX)), ev([8090000]))
+
+
+def test_cited_id_without_amount_does_not_allow_zero():
+    rule_only = str(uuid.UUID(int=99))
+    assert "amounts" in check_grounding(draft(summary="moved $0.00.", cited=(rule_only,)), ev([8090000]))
+
+
+def test_dollar_with_several_spaces_is_malformed():
+    assert "amounts" in check_grounding(draft(summary="paid $  999."), ev([8090000]))
+
+
 # FR-011.2: checks cover every finding statement, not only the summary.
 def test_amount_in_finding_statement_is_checked():
     bad = draft(statements=["transaction reviewed.", "debit of $81,000."])

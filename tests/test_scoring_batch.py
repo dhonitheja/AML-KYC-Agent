@@ -8,7 +8,7 @@ from psycopg.rows import dict_row
 from redis import Redis
 
 from pipeline import DSN
-from scoring import VELOCITY, in_window, score_batch
+from scoring import VELOCITY, forget_counts, in_window, score_batch
 
 T0 = datetime(2026, 11, 20, 12, tzinfo=timezone.utc)
 
@@ -77,23 +77,54 @@ def test_failed_batch_retry_keeps_first_velocity_counts():
                           ([r["id"] for r in rows],)).fetchone()["n"] == 0  # rolled back
         with db.transaction():
             retried = score_batch(db, script, redis, rows)
-    assert [shape_of(r) for r in retried] == [shape_of(r) for r in first]
+    assert retried == first
     burst = [r for r in retried if any(h["rule"] == "minute_velocity" for h in r["rules"])]
     assert len(burst) == 1  # only the 10th same-second event reaches the minute threshold
 
 
-def test_velocity_prunes_thousands_of_expired_events_in_one_call():
-    """Expiring more members than Lua's unpack() limit must not fail the script (HDEL is chunked)."""
+def test_failed_batch_retry_keeps_counts_trimmed_by_a_later_event():
+    """A later event in the same failed batch trims the earlier members; their retry must reuse the first counts."""
+    redis = Redis(host="redis")
+    script = redis.register_script(VELOCITY)
+    rows = scenario(f"BATCH-{uuid.uuid4().hex[:10]}")
+    # 97 h: past any event-time retention of the counts, which therefore must not be pruned by event time at all
+    late = dict(rows[0], id=str(uuid.uuid4()), occurred_at=(T0 + timedelta(hours=97)).isoformat())
+    with psycopg.connect(DSN, autocommit=True, row_factory=dict_row) as db:
+        try:
+            with db.transaction():
+                first = score_batch(db, script, redis, rows + [late])
+                raise RuntimeError("simulated failure before commit")
+        except RuntimeError:
+            pass
+        with db.transaction():
+            retried = score_batch(db, script, redis, rows + [late])
+    assert retried == first
+    assert any(h["rule"] == "minute_velocity" for r in retried for h in r["rules"])  # the burst still counts
+
+
+def test_velocity_trims_thousands_of_expired_events_in_one_call():
+    """Trimming many members is one ZREMRANGEBYSCORE; stored counts are left for forget_counts."""
     redis = Redis(host="redis")
     script = redis.register_script(VELOCITY)
     account = f"BATCH-{uuid.uuid4().hex[:10]}"
     keys = ["velocity:" + account, "velocity-counts:" + account]
     start = T0.timestamp()
     redis.zadd(keys[0], {f"old-{i}": start for i in range(9000)})
-    redis.hset(keys[1], mapping={f"old-{i}": "1,1" for i in range(9000)})
     assert script(keys=keys, args=[start + 49 * 3600, "new"]) == [1, 1]
-    assert redis.zcard(keys[0]) == 1 and redis.hlen(keys[1]) == 1
+    assert redis.zcard(keys[0]) == 1 and redis.hget(keys[1], "new") == b"1,1"
     redis.delete(*keys)
+
+
+def test_forget_counts_after_commit():
+    redis = Redis(host="redis")
+    script = redis.register_script(VELOCITY)
+    rows = scenario(f"BATCH-{uuid.uuid4().hex[:10]}")[:3]
+    with psycopg.connect(DSN, autocommit=True, row_factory=dict_row) as db:
+        with db.transaction():
+            score_batch(db, script, redis, rows)
+    assert redis.hlen("velocity-counts:" + rows[0]["account"]) == 3
+    forget_counts(redis, rows)
+    assert redis.hlen("velocity-counts:" + rows[0]["account"]) == 0
 
 
 def test_uppercase_ids_are_recorded_once_and_replays_reuse_the_decision():
@@ -111,3 +142,29 @@ def test_uppercase_ids_are_recorded_once_and_replays_reuse_the_decision():
             ([r["id"] for r in rows],))}
     assert replay == first and [r["transaction_id"] for r in first] == [r["id"] for r in rows]  # lowercase
     assert counts["transaction.recorded"] == counts["scored.v1"] == len(rows)
+
+
+def test_unscreenable_counterparty_is_recorded_without_stopping_the_batch():
+    """A debit to "!!!" normalizes to an empty name; it must be audited as unscreenable, not raise."""
+    redis = Redis(host="redis")
+    script = redis.register_script(VELOCITY)
+    row = dict(scenario(f"BATCH-{uuid.uuid4().hex[:10]}")[4], counterparty="!!!")
+    with psycopg.connect(DSN, autocommit=True, row_factory=dict_row) as db:
+        with db.transaction():
+            score_batch(db, script, redis, [row])
+        screened = db.execute("SELECT inputs FROM audit WHERE action='payment.screened.v1' AND transaction_id=%s",
+                              (row["id"],)).fetchone()["inputs"]
+    assert screened["unscreenable"] is True and screened["hits"] == []
+
+
+def test_scorer_records_kafka_coordinates():
+    redis = Redis(host="redis")
+    script = redis.register_script(VELOCITY)
+    row = scenario(f"BATCH-{uuid.uuid4().hex[:10]}")[0]
+    with psycopg.connect(DSN, autocommit=True, row_factory=dict_row) as db:
+        with db.transaction():
+            score_batch(db, script, redis, [row], [dict(topic="transactions", partition=3, offset=42)])
+        recorded = db.execute("SELECT inputs FROM audit WHERE action='transaction.recorded' AND transaction_id=%s",
+                              (row["id"],)).fetchone()["inputs"]
+    assert (recorded["topic"], recorded["partition"], recorded["offset"]) == ("transactions", 3, 42)
+    assert recorded["account_key"] == row["account"]

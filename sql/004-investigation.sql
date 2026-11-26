@@ -2,6 +2,10 @@ BEGIN;
 SELECT set_config('aml.investigator_password', :'investigator_password', true) IS NOT NULL AS password_set;
 DO $$
 BEGIN
+    -- An unreadable or empty secret must never clear the role's password (ON_ERROR_STOP does not catch it).
+    IF current_setting('aml.investigator_password') = '' THEN
+        RAISE EXCEPTION 'investigator_password is empty';
+    END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='aml_investigator') THEN
         EXECUTE format('CREATE ROLE aml_investigator LOGIN PASSWORD %L', current_setting('aml.investigator_password'));
     ELSE

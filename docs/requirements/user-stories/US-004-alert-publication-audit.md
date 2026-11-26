@@ -18,7 +18,7 @@ epic: "audit"
 # US-004: Alerts published and every decision audited
 
 ## Story
-As an **auditor**, I want **each score and alert recorded in the audit table and published to the alerts topic**, so that **I can reconstruct every decision**.
+As an **auditor**, I want **each score and alert recorded in the audit table, and each alert (score >= 60) published to the alerts topic**, so that **I can reconstruct every decision**.
 
 ## Acceptance Criteria
 - [ ] AC-1: Given a scored transaction, when scoring completes, then one scored.v1 audit row exists, plus one alerted.v1 row if score >= 60.
