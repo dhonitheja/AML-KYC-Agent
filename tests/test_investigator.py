@@ -1240,3 +1240,11 @@ def test_stack_duplicate_insert_violates_index(admin, first, second):
 @pytest.mark.parametrize("url", ["http://llm:11434", "https://10.0.0.5", "http://[::1]:11434", "http://ollama_1.internal"])
 def test_local_valid_urls_accepted(no_io, url):
     assert load(dict(LOCAL, LOCAL_LLM_URL=url)).local_url == url
+
+
+def test_draft_with_literal_backslash_u0000_text_is_accepted():
+    ev = evidence()
+    data = stub_draft(ev).model_dump()
+    data["summary"] = data["summary"] + " (escape text " + chr(92) + "u0000)"  # six characters, no NUL
+    assert isinstance(inv.validate_draft(json.dumps(data), inv.evidence_ids(ev), {r["rule"] for r in ev["rules"]}),
+                      Draft)

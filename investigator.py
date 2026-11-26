@@ -272,6 +272,15 @@ def render_prompt(evidence):
     return SYSTEM, user, sha256(SYSTEM + "\n" + user)
 
 
+def _has_nul(value):
+    """A real U+0000 in any decoded string (not the six-character text backslash-u0000)."""
+    if isinstance(value, str):
+        return "\x00" in value
+    if isinstance(value, dict):
+        value = value.values()
+    return isinstance(value, (list, type({}.values()))) and any(_has_nul(v) for v in value)
+
+
 def validate_draft(raw, evidence_ids, fired_rules):
     """Draft on success, else an error tag: schema | citation | rule. Never raises."""
     try:
@@ -286,7 +295,7 @@ def validate_draft(raw, evidence_ids, fired_rules):
         return "citation"
     if any(f.rule is not None and f.rule not in fired_rules for f in draft.findings):
         return "rule"
-    if "\\u0000" in draft.model_dump_json():  # PostgreSQL jsonb rejects U+0000; the insert would crash the consumer
+    if _has_nul(draft.model_dump()):  # PostgreSQL jsonb rejects U+0000; the insert would crash the consumer
         return "schema"
     return draft
 
