@@ -89,7 +89,9 @@ def load_model_config(env, read_key=read_secret):
         except ValueError:
             raise SystemExit("LOCAL_LLM_URL: must be an http(s) URL with a host") from None
         host = parsed.hostname or ""  # urlsplit does not validate host syntax; http.client rejects e.g. spaces
-        if parsed.scheme not in ("http", "https") or not re.fullmatch(r"[A-Za-z0-9._-]+|[0-9A-Fa-f:.]+", host):
+        # "?" or "#" would swallow the appended /api/chat (query) or drop it (fragment), so every call would 404
+        if (parsed.scheme not in ("http", "https") or "?" in url or "#" in url
+                or not re.fullmatch(r"[A-Za-z0-9._-]+|[0-9A-Fa-f:.]+", host)):
             raise SystemExit("LOCAL_LLM_URL: must be an http(s) URL with a host")
         if not model:
             raise SystemExit("LLM_MODEL: required in local mode")

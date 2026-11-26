@@ -164,7 +164,7 @@ def test_local_without_url_exits(no_io, url):
 
 # Review finding: a malformed URL fails every call and leaves unretried model_failure rows, so it exits at startup.
 @pytest.mark.parametrize("url", ["not-a-url", "ftp://llm:11434", "http://", "http://llm:notaport", "http://llm:99999",
-                                 "http://bad host:11434"])
+                                 "http://bad host:11434", "http://llm:11434/?x=1", "http://llm:11434/#local"])
 def test_local_malformed_url_exits_without_echoing_it(no_io, url):
     message = exits(dict(LOCAL, LOCAL_LLM_URL=url))
     assert "LOCAL_LLM_URL" in message and url not in message
